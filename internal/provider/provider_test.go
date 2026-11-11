@@ -1,10 +1,14 @@
 package provider_test
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/provider"
@@ -94,4 +98,44 @@ provider "kentik-cloudexport" {
 			})
 		})
 	}
+}
+
+// TestProvider_SendsConfiguredCredentials checks the whole path from HCL
+// provider settings to gRPC metadata on the wire.
+func TestProvider_SendsConfiguredCredentials(t *testing.T) {
+	t.Parallel()
+	srv, _ := newFake(t, seedExports()...)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: `
+provider "kentik-cloudexport" {
+  email = "alice@example.com"
+  token = "secret-token-123"
+}
+
+data "kentik-cloudexport_list" "all" {}
+`,
+			Check: func(*terraform.State) error {
+				calls := srv.Calls()
+				if len(calls) == 0 {
+					return errors.New("no RPCs received")
+				}
+				for _, c := range calls {
+					if got := c.Metadata.Get("x-ch-auth-email"); len(got) != 1 || got[0] != "alice@example.com" {
+						return fmt.Errorf("%s: x-ch-auth-email = %v", c.Method, got)
+					}
+					if got := c.Metadata.Get("x-ch-auth-api-token"); len(got) != 1 || got[0] != "secret-token-123" {
+						return fmt.Errorf("%s: x-ch-auth-api-token = %v", c.Method, got)
+					}
+					ua := strings.Join(c.Metadata.Get("user-agent"), " ")
+					if !strings.Contains(ua, "terraform-provider-kentik-cloudexport/") || !strings.Contains(ua, "Terraform/") {
+						return fmt.Errorf("%s: user-agent = %q", c.Method, ua)
+					}
+				}
+				return nil
+			},
+		}},
+	})
 }

@@ -50,6 +50,9 @@ Upgrade notes: [docs/UPGRADING.md](docs/UPGRADING.md).
 - `kentik-cloudexport_list.invalid_exports_count`.
 - `terraform import` support for `kentik-cloudexport_item`.
 - `docs/UPGRADING.md` and ADR 0001.
+- `make docs` also runs `tfplugindocs validate`; the docs index no longer uses the
+  legacy `layout` front matter.
+- End-to-end test that provider `email`/`token` arrive as gRPC auth metadata.
 - `AGENTS.md`, `CLAUDE.md`, `SECURITY.md`, `CHANGELOG.md`, `kentik-api.json`.
 - Makefile targets `build`, `test`, `testacc`, `lint`, `vuln`, `generate`,
   `fmt`, `docs`, `check-generate`, `check-go-mod`, `check-api-manifest`,

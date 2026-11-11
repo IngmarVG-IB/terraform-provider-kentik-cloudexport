@@ -55,6 +55,7 @@ generate: docs
 .PHONY: docs
 docs:
 	go tool tfplugindocs generate --provider-name ${NAME}
+	go tool tfplugindocs validate --provider-name ${NAME}
 
 # Fails if `make generate` changes tracked files (used by CI).
 .PHONY: check-generate

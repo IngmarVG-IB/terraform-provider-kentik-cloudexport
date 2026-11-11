@@ -1,5 +1,4 @@
 ---
-layout: ""
 page_title: "Provider: Kentik Cloud Export"
 description: |-
   The Kentik Cloud Export provider manages Kentik cloud exports, which import flow logs and metadata from services deployed in public clouds.
