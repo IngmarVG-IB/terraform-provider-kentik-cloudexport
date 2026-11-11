@@ -25,21 +25,21 @@ Development steps:
 
 ### Test
 
-Tests run the provider against a `testAPIServer`
-
-This allows to:
-- avoid the necessity of providing valid API credentials
-- avoid creating resources on remote server
-- make the test results more reliable
+Unit tests run the provider against an in-process fake of the Kentik
+`CloudExportAdminService` gRPC API (`internal/kentikapi/kentikapitest`, over
+bufconn), so they need no credentials and no network. A `terraform` or `tofu`
+binary must be on `PATH`.
 
 ### Acceptance Tests
 
-Acceptance tests run the provider against production server.
+Acceptance tests run the provider against a live Kentik tenant and are skipped unless `TF_ACC=1`.
 To run it locally, you need to set your login credentials as environment variables as below.
 
 ```bash
 export KTAPI_AUTH_EMAIL=<Kentik API authentication email>
 export KTAPI_AUTH_TOKEN=<Kentik API authentication token>
+export KENTIK_PLAN_ID=<plan ID to create test exports under>
+make testacc
 ```
 
 ### Debug

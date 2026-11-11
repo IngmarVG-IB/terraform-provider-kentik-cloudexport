@@ -15,8 +15,12 @@ attribute names and state is a hard requirement.
 | path | what |
 |---|---|
 | `main.go` | Plugin entry point (`plugin.Serve`, SDKv2, protocol 5). |
+| `internal/kentikapi/` | Service-agnostic adapter over the generated api-schema-public gRPC clients: `kentikapi.New(ctx, Config)` with TLS, per-RPC auth metadata, timeouts, retries, logging hook. No Terraform imports. |
+| `internal/kentikapi/kentikapitest/` | Offline fakes: a bufconn gRPC `Server` that records calls and metadata, and an in-memory `CloudExportServer`. |
 | `internal/provider/` | Provider schema and configuration, resource `kentik-cloudexport_item`, data sources `kentik-cloudexport_item` and `kentik-cloudexport_list`, plus their tests. |
-| `internal/provider/api_server_test.go` | Fake `CloudExportAdminService` gRPC server used by all offline tests. |
+| `internal/provider/cloudexport_schema.go` / `cloudexport_convert.go` | Terraform schema and the Terraform <-> `cloud_export/v202506` proto mapping. |
+| `internal/provider/acceptance_test.go` | Live-tenant tests (skipped unless `TF_ACC=1`) and the sweeper. |
+| `docs/UPGRADING.md` | Upgrade guide and attribute mapping from 0.4.x. |
 | `examples/` | One directory per resource/data source (`resource.tf`, `data-source.tf`), embedded in the docs by tfplugindocs. |
 | `templates/` | tfplugindocs templates. `docs/` is generated from these: do not edit `docs/` by hand. |
 | `tools/` | Helper scripts used by the Makefile (`check_api_manifest.sh`, `validate_examples.sh`). |
@@ -70,14 +74,18 @@ Do not run `apply` against a real tenant from a development build.
    when no stable version exists, and mark the surface experimental.
 2. `go get github.com/kentik/api-schema-public@<commit>` and use the generated
    client in `gen/go/kentik/<service>/<version>`. Do not hand-write API models.
-3. Add or extend the fake server in `internal/provider/*_test.go` so the new
-   RPCs can be tested offline.
-4. Map the proto to the Terraform schema. Keep existing attribute names. When
+3. Add a field for the service client to `kentikapi.Client` and build it from
+   the shared connection in `kentikapi.New`.
+4. Add an in-memory fake to `internal/kentikapi/kentikapitest` (embed the
+   generated `Unimplemented...Server`, register it on `kentikapitest.Server`)
+   so the new RPCs can be tested offline.
+5. Map the proto to the Terraform schema. Keep existing attribute names. When
    an attribute must be renamed or change type, bump the resource
    `SchemaVersion` and add a `StateUpgrader` with a unit test.
-5. Write unit tests for create, read, update, delete and import, then an
-   example under `examples/`, and run `make generate`.
-6. Update `kentik-api.json` (`schema_source.ref` must equal the go.mod
+6. Write unit tests for create, read, update, delete and import with
+   `resource.UnitTest` and `factories(srv)` (see `internal/provider/common_test.go`),
+   then an example under `examples/`, and run `make generate`.
+7. Update `kentik-api.json` (`schema_source.ref` must equal the go.mod
    version; CI checks this), `CHANGELOG.md` and, for user-visible changes,
    `docs/UPGRADING.md`.
 
