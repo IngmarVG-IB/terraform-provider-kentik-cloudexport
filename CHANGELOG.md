@@ -49,7 +49,7 @@ Upgrade notes: [docs/UPGRADING.md](docs/UPGRADING.md).
 - GCE: `metadata_only`, `collect_flow_logs` (default `true`), `collect_metrics`.
 - `kentik-cloudexport_list.invalid_exports_count`.
 - `terraform import` support for `kentik-cloudexport_item`.
-- `docs/UPGRADING.md` and ADR 0001.
+- `docs/UPGRADING.md`, ADR 0001 and ADR 0002 (proposal: terraform-plugin-framework migration).
 - `make docs` also runs `tfplugindocs validate`; the docs index no longer uses the
   legacy `layout` front matter.
 - End-to-end test that provider `email`/`token` arrive as gRPC auth metadata.
