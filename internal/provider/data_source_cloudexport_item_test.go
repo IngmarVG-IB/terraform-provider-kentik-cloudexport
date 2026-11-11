@@ -23,7 +23,7 @@ const (
 	ceIBMDS   = "data.kentik-cloudexport_item.ibm"
 )
 
-//nolint: gochecknoinits
+//nolint:gochecknoinits // test sweepers must register in init
 func init() {
 	resource.AddTestSweepers("kentik_tf_integ_test", &resource.Sweeper{
 		Name: "kentik_tf_integ_test",

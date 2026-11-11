@@ -6,6 +6,7 @@ import (
 	"flag"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
+
 	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/provider"
 )
 

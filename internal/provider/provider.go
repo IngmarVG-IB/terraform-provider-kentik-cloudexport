@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -133,8 +132,7 @@ func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.D
 	}
 
 	strippedCfg := stripSensitiveData(cfg)
-	cfgJSON, _ := json.Marshal(strippedCfg) //nolint: errcheck
-	tflog.Debug(ctx, fmt.Sprintf("Creating Kentik API client with config: %+v, JSON: %v", strippedCfg, string(cfgJSON)))
+	tflog.Debug(ctx, fmt.Sprintf("Creating Kentik API client with config: %+v", strippedCfg))
 
 	client, err := kentikapi.NewClient(cfg)
 	if err != nil {

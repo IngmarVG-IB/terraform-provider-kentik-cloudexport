@@ -364,7 +364,8 @@ func resourceDataToCloudExport(d *schema.ResourceData) (*models.CloudExport, err
 	}
 
 	// required
-	export.Type = models.CloudExportType(d.Get("type").(string))
+	exportType, _ := d.Get("type").(string)
+	export.Type = models.CloudExportType(exportType)
 
 	// required
 	if v, ok := d.Get("enabled").(bool); ok {
@@ -389,7 +390,7 @@ func resourceDataToCloudExport(d *schema.ResourceData) (*models.CloudExport, err
 	}
 
 	// required
-	cloudProvider := d.Get("cloud_provider").(string) //nolint: errcheck, forcetypeassert // type enforced by schema
+	cloudProvider := d.Get("cloud_provider").(string)
 	export.CloudProvider = models.CloudProvider(cloudProvider)
 
 	properties, err := resourceDataToCEProperties(cloudProvider, d)
@@ -414,15 +415,22 @@ func resourceDataToCEProperties(cloudProvider string, d *schema.ResourceData) (m
 	if !ok {
 		return nil, fmt.Errorf("for cloud_provider=%[1]s, there should also be %[1]s{...} attribute provided", cloudProvider)
 	}
-	providerDef := providerObj.([]interface{})[0]       // extract nested object under index 0. Terraform clumsiness
-	providerMap := providerDef.(map[string]interface{}) //nolint: errcheck, forcetypeassert // type enforced by schema
+	providerList, _ := providerObj.([]interface{})
+	if len(providerList) == 0 {
+		return nil, fmt.Errorf("%s{...} attribute is empty", cloudProvider)
+	}
+	providerMap, _ := providerList[0].(map[string]interface{})
+	str := func(key string) string {
+		v, _ := providerMap[key].(string)
+		return v
+	}
 	switch cloudProvider {
 	case "aws":
 		{
 			aws := models.AWSProperties{
-				Bucket:     providerMap["bucket"].(string),
-				IAMRoleARN: providerMap["iam_role_arn"].(string),
-				Region:     providerMap["region"].(string),
+				Bucket:     str("bucket"),
+				IAMRoleARN: str("iam_role_arn"),
+				Region:     str("region"),
 			}
 			if v, ok := providerMap["delete_after_read"].(bool); ok {
 				aws.DeleteAfterRead = &v
@@ -435,10 +443,10 @@ func resourceDataToCEProperties(cloudProvider string, d *schema.ResourceData) (m
 	case "azure":
 		{
 			azure := models.AzureProperties{
-				Location:       providerMap["location"].(string),
-				ResourceGroup:  providerMap["resource_group"].(string),
-				StorageAccount: providerMap["storage_account"].(string),
-				SubscriptionID: providerMap["subscription_id"].(string),
+				Location:       str("location"),
+				ResourceGroup:  str("resource_group"),
+				StorageAccount: str("storage_account"),
+				SubscriptionID: str("subscription_id"),
 			}
 			if v, ok := providerMap["security_principal_enabled"].(bool); ok {
 				azure.SecurityPrincipalEnabled = &v
@@ -448,15 +456,15 @@ func resourceDataToCEProperties(cloudProvider string, d *schema.ResourceData) (m
 	case "gce":
 		{
 			gce := models.GCEProperties{
-				Project:      providerMap["project"].(string),
-				Subscription: providerMap["subscription"].(string),
+				Project:      str("project"),
+				Subscription: str("subscription"),
 			}
 			return &gce, nil
 		}
 	case "ibm":
 		{
 			ibm := models.IBMProperties{
-				Bucket: providerMap["bucket"].(string),
+				Bucket: str("bucket"),
 			}
 			return &ibm, nil
 		}

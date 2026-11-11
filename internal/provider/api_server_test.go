@@ -39,7 +39,7 @@ func newTestAPIServer(t testing.TB, ces []*cloudexportpb.CloudExport) *testAPISe
 }
 
 func (s *testAPIServer) Start() {
-	l, err := net.Listen("tcp", "localhost:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "localhost:0")
 	require.NoError(s.t, err)
 
 	s.url = l.Addr().String()

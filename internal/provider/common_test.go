@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+
 	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/provider"
 )
 
@@ -17,7 +18,7 @@ func TestMain(m *testing.M) {
 // to create a provider server to which the CLI can reattach.
 func providerFactories() map[string]func() (*schema.Provider, error) {
 	return map[string]func() (*schema.Provider, error){
-		"kentik-cloudexport": func() (*schema.Provider, error) { //nolint: unparam
+		"kentik-cloudexport": func() (*schema.Provider, error) {
 			return provider.New(), nil
 		},
 	}

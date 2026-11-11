@@ -1,107 +1,80 @@
-# Configuration reference: https://golangci-lint.run/usage/configuration/
-# Linters reference: https://golangci-lint.run/usage/linters/
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude:
-    # EXC0002 revive: Annoying issue about not having a comment. The rare codebase has such comments
-    - (comment on exported (method|function|type|const)|should have( a package)? comment|comment should be of the form)
-    # tparallel: Parallel subtests are not always desirable
-    - subtests should call t\.Parallel
-  exclude-use-default: false
+# Configuration reference: https://golangci-lint.run/docs/configuration/
+# Requires golangci-lint v2.
+version: "2"
 
-# Disabled linters:
-# - cyclop - duplicates functionality of gocyclo
-# - exhaustivestruct - breaks "Make the zero value useful" proverb, meant to be used only for special cases
-# - funlen - not needed - gocyclo ensures that functions complexity is not too high
-# - godox - requires all TODOs to be removed - too strict
-# - golint - deprecated (since v1.41.0) due to: The repository of the linter has been archived by the owner
-# - gomoddirectives - does not allow "replace" directives - too strict
-# - goerr113 - following check is too strict: "do not define dynamic errors, use wrapped static errors instead",
-#              the check cannot be disabled
-# - interfacer - deprecated (since v1.38.0) due to: The repository of the linter has been archived by the owner
-# - maligned - deprecated (since v1.38.0) due to: The repository of the linter has been archived by the owner
-# - mnd - extracting all numbers to constants is counter-productive
-# - nlreturn - leads to using too many line breaks
-# - paralleltest - considered a premature optimization
-# - prealloc - considered a premature optimization
-# - scopelint - deprecated (since v1.39.0) due to: The repository of the linter has been deprecated by the owner
-# - thelper - enforcing t.Helper() everywhere is too strict
-# - wsl - leads to using too many line breaks
+run:
+  timeout: 5m
+
 linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
     - asciicheck
     - bodyclose
-    - deadcode
-    - depguard
+    - copyloopvar
     - dogsled
-    - dupl
     - durationcheck
-    - errcheck
     - errorlint
     - exhaustive
-    - exportloopref
-    - forbidigo
-    - forcetypeassert
-    - gci
-    - gochecknoglobals
-    - gochecknoinits
-    - gocognit
-    - goconst
     - gocritic
     - gocyclo
     - godot
-    - gofmt
-    - gofumpt
-    - goheader
-    - goimports
-    - gomodguard
-    - goprintffuncname
     - gosec
-    - gosimple
-    - govet
-    - ifshort
-    - importas
-    - ineffassign
     - lll
-    - makezero
     - misspell
     - nakedret
-    - nestif
     - nilerr
     - noctx
     - nolintlint
     - predeclared
     - revive
-    - rowserrcheck
-    - sqlclosecheck
-    - staticcheck
-    - structcheck
-    - stylecheck
     - testpackage
-    - tparallel
-    - typecheck
     - unconvert
     - unparam
-    - unused
-    - varcheck
     - wastedassign
     - whitespace
-    - wrapcheck
+  settings:
+    errcheck:
+      # SDKv2 d.Get(...).(T) assertions are guaranteed by the schema.
+      check-type-assertions: false
+    errorlint:
+      errorf: false
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocyclo:
+      min-complexity: 15
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # reordering struct fields hurts readability
+    lll:
+      line-length: 140
+    nakedret:
+      max-func-lines: 5
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Table-driven and fixture-heavy tests are allowed to be long and repetitive.
+      - path: _test\.go
+        linters:
+          - lll
+          - gocyclo
+      # Internal (white-box) tests live in the same package on purpose.
+      - path: _internal_test\.go
+        linters:
+          - testpackage
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  errorlint:
-    # Check whether fmt.Errorf uses the %w verb for formatting errors - too strict
-    errorf: false
-  gocyclo:
-    min-complexity: 10
-  govet:
-    disable:
-      # Reordering struct fields may decrease readability
-      - fieldalignment
-    enable-all: true
-  nakedret:
-    max-func-lines: 5
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kentik/terraform-provider-kentik-cloudexport
