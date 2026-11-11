@@ -3,23 +3,23 @@
 page_title: "kentik-cloudexport_item Data Source - kentik-cloudexport"
 subcategory: ""
 description: |-
-  Data source representing single cloud export item
+  Reads a single Kentik cloud export by ID (Kentik API cloud_export/v202506).
 ---
 
 # kentik-cloudexport_item (Data Source)
 
-Data source representing single cloud export item
+Reads a single Kentik cloud export by ID (Kentik API `cloud_export/v202506`).
 
 ## Example Usage
 
 ```terraform
-# fetch single cloud export - it must exist or error will be reported
+# Read a single cloud export by ID. The export must exist.
 data "kentik-cloudexport_item" "export" {
   id = "3"
 }
 
-output "export_3" {
-  value = data.kentik-cloudexport_item.export
+output "export_status" {
+  value = data.kentik-cloudexport_item.export.current_status
 }
 ```
 
@@ -28,33 +28,47 @@ output "export_3" {
 
 ### Required
 
-- `id` (String) The internal cloud export identifier. This is Read-only and assigned by Kentik
+- `id` (String) Unique identifier of the cloud export to read.
 
 ### Read-Only
 
-- `aws` (List of Object) Properties specific to Amazon Web Services "vpc flow logs" exports (see [below for nested schema](#nestedatt--aws))
-- `azure` (List of Object) Properties specific to Azure exports (see [below for nested schema](#nestedatt--azure))
-- `bgp` (List of Object) Optional BGP related settings (see [below for nested schema](#nestedatt--bgp))
-- `cloud_provider` (String) The cloud provider targeted by this export (aws, azure, gce, ibm)
-- `current_status` (List of Object) Export task status (see [below for nested schema](#nestedatt--current_status))
-- `description` (String) An optional, longer description
-- `enabled` (Boolean) Whether this task is enabled and intended to run, or disabled
-- `gce` (List of Object) Properties specific to Google Cloud export (see [below for nested schema](#nestedatt--gce))
-- `ibm` (List of Object) Properties specific to IBM Cloud exports (see [below for nested schema](#nestedatt--ibm))
-- `name` (String) A short name for this export
-- `plan_id` (String) The identifier of the Kentik plan associated with this task
-- `type` (String) CLOUD_EXPORT_TYPE_UNSPECIFIED: Invalid or incomplete exports. CLOUD_EXPORT_TYPE_KENTIK_MANAGED: Cloud exports that are managed by Kentik. CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED: Exports that are managed by Kentik customers (eg. by running an agent)
+- `aws` (List of Object) Properties specific to Amazon Web Services (VPC flow logs) exports. (see [below for nested schema](#nestedatt--aws))
+- `azure` (List of Object) Properties specific to Microsoft Azure (NSG flow logs) exports. (see [below for nested schema](#nestedatt--azure))
+- `bgp` (List of Object) Deprecated: BGP settings are not part of the cloud_export v202506 API and are ignored. (see [below for nested schema](#nestedatt--bgp))
+- `cdate` (String) Creation timestamp (UTC, RFC 3339).
+- `cloud_provider` (String) Cloud provider: `aws`, `azure`, `gce` or `oci`. The block of the same name holds the provider-specific properties. (`ibm` is no longer supported by the API.)
+- `current_status` (List of Object) Runtime status of the export process. (see [below for nested schema](#nestedatt--current_status))
+- `description` (String) Description of the instance.
+- `edate` (String) Last modification timestamp (UTC, RFC 3339).
+- `enabled` (Boolean) Whether the instance is active.
+- `gce` (List of Object) Properties specific to Google Cloud exports. (see [below for nested schema](#nestedatt--gce))
+- `ibm` (List of Object) Deprecated: IBM Cloud is not supported by the cloud_export v202506 API. (see [below for nested schema](#nestedatt--ibm))
+- `name` (String) User selected name of the instance.
+- `oci` (List of Object) Properties specific to Oracle Cloud Infrastructure exports. (see [below for nested schema](#nestedatt--oci))
+- `plan_id` (String) Identifier of the billing plan for the instance.
+- `sampling` (List of Object) Sampling settings for the export. (see [below for nested schema](#nestedatt--sampling))
+- `type` (String) Ownership of the cloud export process. One of `CLOUD_EXPORT_TYPE_KENTIK_MANAGED` (the export process is managed by Kentik), `CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED` (managed by the customer, e.g. by running an agent) or `CLOUD_EXPORT_TYPE_UNSPECIFIED`.
 
 <a id="nestedatt--aws"></a>
 ### Nested Schema for `aws`
 
 Read-Only:
 
+- `aws_iam_role_arn_is_org` (Boolean)
 - `bucket` (String)
+- `bucket_prefix` (String)
+- `collect_firewall_logs` (Boolean)
+- `collect_flow_logs` (Boolean)
+- `collect_metrics` (Boolean)
 - `delete_after_read` (Boolean)
 - `iam_role_arn` (String)
+- `metadata_only` (Boolean)
 - `multiple_buckets` (Boolean)
 - `region` (String)
+- `secondary_aws_accounts` (List of String)
+- `secondary_aws_blocked_accounts` (List of String)
+- `secondary_aws_regions` (List of String)
+- `secondary_aws_suffix` (String)
 
 
 <a id="nestedatt--azure"></a>
@@ -96,6 +110,9 @@ Read-Only:
 
 Read-Only:
 
+- `collect_flow_logs` (Boolean)
+- `collect_metrics` (Boolean)
+- `metadata_only` (Boolean)
 - `project` (String)
 - `subscription` (String)
 
@@ -106,3 +123,30 @@ Read-Only:
 Read-Only:
 
 - `bucket` (String)
+
+
+<a id="nestedatt--oci"></a>
+### Nested Schema for `oci`
+
+Read-Only:
+
+- `metadata_only` (Boolean)
+- `oci_bucket_name` (String)
+- `oci_bucket_namespace_name` (String)
+- `oci_collect_flow_logs` (Boolean)
+- `oci_compartment_id` (List of String)
+- `oci_default_region` (String)
+- `oci_flow_object_name_prefix` (String)
+- `oci_service_connector_ocid` (String)
+- `oci_tenancy_id` (String)
+- `oci_user_id` (String)
+
+
+<a id="nestedatt--sampling"></a>
+### Nested Schema for `sampling`
+
+Read-Only:
+
+- `sampling_enabled` (Boolean)
+- `sampling_rate` (Number)
+- `sampling_type` (String)

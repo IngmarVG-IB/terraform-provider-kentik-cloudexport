@@ -6,14 +6,12 @@ resource "kentik-cloudexport_item" "terraform_aws_export" {
   plan_id        = "11467"
   cloud_provider = "aws"
   aws {
-    bucket            = "terraform-aws-bucket"
-    iam_role_arn      = "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"
-    region            = "us-east-2"
-    delete_after_read = false
-    multiple_buckets  = false
+    bucket       = "terraform-aws-bucket"
+    iam_role_arn = "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"
+    region       = "us-east-2"
   }
 }
 
 output "aws" {
-  value = kentik-cloudexport_item.terraform_aws_export
+  value = kentik-cloudexport_item.terraform_aws_export.id
 }

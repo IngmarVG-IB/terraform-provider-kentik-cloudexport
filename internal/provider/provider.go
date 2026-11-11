@@ -3,16 +3,24 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/kentik/community_sdk_golang/kentikapi"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/kentikapi"
 )
 
 const (
 	apiURLKey      = "apiurl"
+	endpointKey    = "endpoint"
+	regionKey      = "region"
 	emailKey       = "email"
 	tokenKey       = "token"
 	retryKey       = "retry"
@@ -21,14 +29,27 @@ const (
 	maxDelayKey    = "max_delay"
 	logPayloadsKey = "log_payloads"
 
+	// Defaults documented since v0.3; kept for compatibility.
 	defaultMaxAttempts = 100
 	defaultMinDelay    = "1s"
 	defaultMaxDelay    = "5m"
+
+	providerName = "terraform-provider-kentik-cloudexport"
 )
 
-// New returns new Cloud Export provider.
+// Version is the provider version, set by main from the release ldflags.
+var Version = "dev" //nolint:gochecknoglobals
+
+// New returns the Cloud Export provider.
 func New() *schema.Provider {
-	return &schema.Provider{
+	return NewWithClientConfig(nil)
+}
+
+// NewWithClientConfig returns the provider; mutate, if not nil, may adjust the
+// API client configuration after it is built from the provider settings. Tests
+// use it to route the client to an in-process fake server.
+func NewWithClientConfig(mutate func(*kentikapi.Config)) *schema.Provider {
+	p := &schema.Provider{
 		Schema: providerSchema(),
 		ResourcesMap: map[string]*schema.Resource{
 			"kentik-cloudexport_item": resourceCloudExport(),
@@ -37,19 +58,31 @@ func New() *schema.Provider {
 			"kentik-cloudexport_list": dataSourceCloudExportList(),
 			"kentik-cloudexport_item": dataSourceCloudExportItem(),
 		},
-		ConfigureContextFunc: configure,
 	}
+	p.ConfigureContextFunc = func(ctx context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
+		cfg, err := clientConfig(ctx, d, p.UserAgent(providerName, Version))
+		if err != nil {
+			return nil, diag.FromErr(err)
+		}
+		if mutate != nil {
+			mutate(&cfg)
+		}
+		tflog.Debug(ctx, "Creating Kentik API client", map[string]any{
+			"endpoint": cfg.Endpoint, "region": string(cfg.Region), "email": cfg.Email,
+			"max_attempts": cfg.Retry.MaxAttempts, "min_delay": cfg.Retry.MinDelay.String(),
+			"max_delay": cfg.Retry.MaxDelay.String(),
+		})
+		client, err := kentikapi.New(ctx, cfg)
+		if err != nil {
+			return nil, diag.FromErr(err)
+		}
+		return client, nil
+	}
+	return p
 }
 
 func providerSchema() map[string]*schema.Schema {
 	return map[string]*schema.Schema{
-		apiURLKey: {
-			Type:        schema.TypeString,
-			Optional:    true,
-			DefaultFunc: schema.EnvDefaultFunc("KTAPI_URL", nil),
-			Description: "Cloud Export API server URL (optional). Can also be specified with KTAPI_URL environment variable" +
-				" (eg. https://api.kentik.eu).",
-		},
 		emailKey: {
 			Type:        schema.TypeString,
 			Required:    true,
@@ -63,11 +96,36 @@ func providerSchema() map[string]*schema.Schema {
 			DefaultFunc: schema.EnvDefaultFunc("KTAPI_AUTH_TOKEN", nil),
 			Description: "Authorization token (required). Can also be specified with KTAPI_AUTH_TOKEN environment variable.",
 		},
+		regionKey: {
+			Type:     schema.TypeString,
+			Optional: true,
+			DefaultFunc: func() (any, error) {
+				return strings.ToUpper(envOr("KTAPI_REGION", string(kentikapi.RegionUS))), nil
+			},
+			ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice(
+				[]string{string(kentikapi.RegionUS), string(kentikapi.RegionEU)}, true)),
+			Description: "Kentik region: `US` (default, " + kentikapi.EndpointUS + ") or `EU` (" + kentikapi.EndpointEU + "). " +
+				"Ignored when `endpoint` or `apiurl` is set. Can also be specified with KTAPI_REGION environment variable.",
+		},
+		endpointKey: {
+			Type:        schema.TypeString,
+			Optional:    true,
+			DefaultFunc: schema.EnvDefaultFunc("KTAPI_ENDPOINT", nil),
+			Description: "Kentik gRPC API endpoint as `host:port`, always over TLS (optional; overrides `region` and " +
+				"`apiurl`). Can also be specified with KTAPI_ENDPOINT environment variable.",
+		},
+		apiURLKey: {
+			Type:        schema.TypeString,
+			Optional:    true,
+			DefaultFunc: schema.EnvDefaultFunc("KTAPI_URL", nil),
+			Description: "Kentik API base URL (optional), e.g. `https://api.kentik.eu`. The gRPC endpoint is derived " +
+				"from it as `grpc.<host>:443`; an `http://` URL selects a plaintext connection (local test servers only). " +
+				"Prefer `region` or `endpoint`. Can also be specified with KTAPI_URL environment variable.",
+		},
 		retryKey: {
 			Type:        schema.TypeList,
 			Optional:    true,
 			MaxItems:    1,
-			ForceNew:    true,
 			Description: "Configuration for API client retry mechanism",
 			Elem: &schema.Resource{
 				Schema: retryProperties(),
@@ -78,7 +136,7 @@ func providerSchema() map[string]*schema.Schema {
 			Optional:    true,
 			DefaultFunc: schema.EnvDefaultFunc("KTAPI_LOG_PAYLOADS", false),
 			Description: "Log payloads flag enables verbose debug logs of requests and responses (optional). " +
-				"Can also be specified with KTAPI_LOG_PAYLOADS environment variable.",
+				"Credentials are never logged. Can also be specified with KTAPI_LOG_PAYLOADS environment variable.",
 		},
 	}
 }
@@ -117,78 +175,100 @@ func retryProperties() map[string]*schema.Schema {
 	}
 }
 
-func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
-	rc, err := getRetryConfig(ctx, d)
+func clientConfig(ctx context.Context, d *schema.ResourceData, userAgent string) (kentikapi.Config, error) {
+	retry, err := getRetryConfig(ctx, d)
 	if err != nil {
-		return nil, diag.FromErr(err)
+		return kentikapi.Config{}, err
 	}
-
 	cfg := kentikapi.Config{
-		APIURL:      getAPIURL(d),
-		AuthEmail:   d.Get(emailKey).(string),
-		AuthToken:   d.Get(tokenKey).(string),
-		RetryCfg:    rc,
-		LogPayloads: d.Get(logPayloadsKey).(bool),
+		Email:     d.Get(emailKey).(string),
+		Token:     d.Get(tokenKey).(string),
+		Region:    kentikapi.Region(strings.ToUpper(d.Get(regionKey).(string))),
+		UserAgent: userAgent,
+		Retry:     retry,
 	}
+	switch endpoint, apiURL := d.Get(endpointKey).(string), d.Get(apiURLKey).(string); {
+	case endpoint != "":
+		cfg.Endpoint = endpoint
+	case apiURL != "":
+		cfg.Endpoint, cfg.Insecure, err = kentikapi.EndpointFromAPIURL(apiURL)
+		if err != nil {
+			return kentikapi.Config{}, err
+		}
+	}
+	if d.Get(logPayloadsKey).(bool) {
+		cfg.Log = logPayload
+	}
+	return cfg, nil
+}
 
-	strippedCfg := stripSensitiveData(cfg)
-	tflog.Debug(ctx, fmt.Sprintf("Creating Kentik API client with config: %+v", strippedCfg))
-
-	client, err := kentikapi.NewClient(cfg)
+func logPayload(ctx context.Context, method string, req, resp any, err error) {
+	fields := map[string]any{"method": method, "request": marshalForLog(req)}
 	if err != nil {
-		return nil, diag.FromErr(err)
+		fields["error"] = err.Error()
+	} else {
+		fields["response"] = marshalForLog(resp)
 	}
-	return client, nil
+	tflog.Debug(ctx, "Kentik API call", fields)
+}
+
+func marshalForLog(v any) string {
+	if m, ok := v.(proto.Message); ok {
+		if b, err := protojson.Marshal(m); err == nil {
+			return string(b)
+		}
+	}
+	return fmt.Sprint(v)
 }
 
 func getRetryConfig(ctx context.Context, d *schema.ResourceData) (kentikapi.RetryConfig, error) {
 	tflog.Debug(ctx, fmt.Sprintf("Getting retry config: %v", d.Get(retryKey)))
 	retryCfg, err := getObjectFromNestedResourceData(d.Get(retryKey))
 	if err != nil {
-		return kentikapi.RetryConfig{}, fmt.Errorf("get retry configuration: %v", err)
+		return kentikapi.RetryConfig{}, fmt.Errorf("get retry configuration: %w", err)
 	}
 
-	maxAttempts, ok := retryCfg[maxAttemptsKey].(uint)
-	if !ok || maxAttempts == 0 {
+	// SDKv2 stores TypeInt as int. (v0.4 asserted uint here, so max_attempts was silently ignored.)
+	maxAttempts, ok := retryCfg[maxAttemptsKey].(int)
+	if !ok || maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
 	}
 
-	rawMinDelay, ok := retryCfg[minDelayKey].(string)
-	if !ok || rawMinDelay == "" {
-		rawMinDelay = defaultMinDelay
-	}
-	minDelay, err := time.ParseDuration(rawMinDelay)
+	minDelay, err := parseDelay(retryCfg, minDelayKey, defaultMinDelay)
 	if err != nil {
-		return kentikapi.RetryConfig{}, fmt.Errorf("parse %v duration: %v", minDelayKey, err)
+		return kentikapi.RetryConfig{}, err
+	}
+	maxDelay, err := parseDelay(retryCfg, maxDelayKey, defaultMaxDelay)
+	if err != nil {
+		return kentikapi.RetryConfig{}, err
 	}
 
-	rawMaxDelay, ok := retryCfg[maxDelayKey].(string)
-	if !ok || rawMaxDelay == "" {
-		rawMaxDelay = defaultMaxDelay
-	}
-	maxDelay, err := time.ParseDuration(rawMaxDelay)
-	if err != nil {
-		return kentikapi.RetryConfig{}, fmt.Errorf("parse %v duration: %v", maxDelayKey, err)
-	}
-
-	// KentikAPI returns http 500 when creating CloudExport with name that is already taken.
-	// This is non-retryable situation, so exclude http 500 from RetryableStatusCodes
 	return kentikapi.RetryConfig{
-		MaxAttempts: &maxAttempts,
-		MinDelay:    &minDelay,
-		MaxDelay:    &maxDelay,
+		MaxAttempts: uint(maxAttempts),
+		MinDelay:    minDelay,
+		MaxDelay:    maxDelay,
 	}, nil
 }
 
-func getAPIURL(d *schema.ResourceData) string {
-	apiURL, ok := d.GetOk(apiURLKey)
-	if ok {
-		return apiURL.(string)
+func parseDelay(cfg map[string]any, key, fallback string) (time.Duration, error) {
+	raw, ok := cfg[key].(string)
+	if !ok || raw == "" {
+		raw = fallback
 	}
-	return ""
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse %v duration: %w", key, err)
+	}
+	return v, nil
 }
 
-func stripSensitiveData(cfg kentikapi.Config) kentikapi.Config {
-	cfg.AuthToken = "stripped"
-	return cfg
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func clientFrom(m any) *kentikapi.Client {
+	return m.(*kentikapi.Client)
 }

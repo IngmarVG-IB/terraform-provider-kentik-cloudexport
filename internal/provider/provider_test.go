@@ -1,127 +1,97 @@
 package provider_test
 
 import (
-	"fmt"
 	"regexp"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/stretchr/testify/assert"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/provider"
 )
 
-func TestProvider(t *testing.T) {
+func TestProvider_InternalValidate(t *testing.T) {
 	t.Parallel()
-	err := provider.New().InternalValidate()
-	assert.NoError(t, err)
+	require.NoError(t, provider.New().InternalValidate())
 }
 
-func TestProvider_Configure_MinimalConfig(t *testing.T) {
+func TestProvider_Configure(t *testing.T) {
 	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
-
-	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
-		Steps: []resource.TestStep{{
-			Config: makeMinimalConfig(server.URL()),
-		}},
-	})
+	const trigger = `
+data "kentik-cloudexport_item" "aws" {
+  id = "1"
 }
-
-func TestProvider_Configure_CustomRetryConfig(t *testing.T) {
-	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
-
-	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
-		Steps: []resource.TestStep{{
-			Config: makeCustomRetryConfig(server.URL()),
-		}},
-	})
+`
+	tests := map[string]struct {
+		config  string
+		wantErr string
+	}{
+		"minimal": {config: providerConfig},
+		"custom retry and EU region": {config: `
+provider "kentik-cloudexport" {
+  email        = "joe.doe@example.com"
+  token        = "dummy-token"
+  region       = "eu"
+  log_payloads = true
+  retry {
+    max_attempts = 66
+    min_delay    = "100ms"
+    max_delay    = "1m"
+  }
 }
-
-func TestProvider_Configure_InvalidRetryConfig(t *testing.T) {
-	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
-
-	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
-		Steps: []resource.TestStep{{
-			Config:      makeInvalidRetryConfig(server.URL()),
-			ExpectError: regexp.MustCompile("parse max_delay duration"),
-		}},
-	})
+`},
+		"legacy apiurl": {config: `
+provider "kentik-cloudexport" {
+  email  = "joe.doe@example.com"
+  token  = "dummy-token"
+  apiurl = "https://api.kentik.eu"
 }
-
-func makeMinimalConfig(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		// Trigger arbitrary action
-		data "kentik-cloudexport_item" "aws" {
-			id = "1"
-		}
-	`,
-		apiURL,
-	)
+`},
+		"invalid retry delay": {
+			config: `
+provider "kentik-cloudexport" {
+  email = "joe.doe@example.com"
+  token = "dummy-token"
+  retry {
+    max_delay = "invalid-delay"
+  }
 }
-
-func makeCustomRetryConfig(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-			retry {
-				max_attempts = 66
-				min_delay = "100ms"
-				max_delay = "1m"
+`,
+			wantErr: "parse max_delay duration",
+		},
+		"invalid region": {
+			config: `
+provider "kentik-cloudexport" {
+  email  = "joe.doe@example.com"
+  token  = "dummy-token"
+  region = "APAC"
+}
+`,
+			wantErr: `expected region to be one of`,
+		},
+		"invalid apiurl": {
+			config: `
+provider "kentik-cloudexport" {
+  email  = "joe.doe@example.com"
+  token  = "dummy-token"
+  apiurl = "api.kentik.com"
+}
+`,
+			wantErr: "scheme must be http or https",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv, _ := newFake(t, seedExports()...)
+			step := resource.TestStep{Config: tc.config + trigger}
+			if tc.wantErr != "" {
+				step.ExpectError = regexp.MustCompile(tc.wantErr)
 			}
-			log_payloads = true
-		}
-		
-		// Trigger arbitrary action
-		data "kentik-cloudexport_item" "aws" {
-			id = "1"
-		}
-	`,
-		apiURL,
-	)
-}
-
-func makeInvalidRetryConfig(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-			retry {
-				max_attempts = 66
-				min_delay = "100ms"
-				max_delay = "invalid-delay"
-			}
-			log_payloads = true
-		}
-		
-		// Trigger arbitrary action
-		data "kentik-cloudexport_item" "aws" {
-			id = "1"
-		}
-	`,
-		apiURL,
-	)
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV5ProviderFactories: factories(srv),
+				Steps:                    []resource.TestStep{step},
+			})
+		})
+	}
 }

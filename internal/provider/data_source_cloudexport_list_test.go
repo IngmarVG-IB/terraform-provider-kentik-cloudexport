@@ -1,131 +1,53 @@
 package provider_test
 
 import (
-	"context"
-	"fmt"
 	"testing"
 
-	"github.com/AlekSi/pointer"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/kentik/community_sdk_golang/kentikapi/models"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-)
-
-const (
-	exportsDS = "data.kentik-cloudexport_list.exports"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
 func TestDataSourceCloudExportList(t *testing.T) {
 	t.Parallel()
+	srv, _ := newFake(t, seedExports()...)
 
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
+	const list = "data.kentik-cloudexport_list.exports"
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+data "kentik-cloudexport_list" "exports" {}
+`,
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttrSet(list, "id"),
+				resource.TestCheckResourceAttr(list, "items.#", "4"),
+				resource.TestCheckResourceAttr(list, "invalid_exports_count", "0"),
+				resource.TestCheckResourceAttr(list, "items.0.id", "1"),
+				resource.TestCheckResourceAttr(list, "items.0.name", "test_terraform_aws_export"),
+				resource.TestCheckResourceAttr(list, "items.0.cloud_provider", "aws"),
+				resource.TestCheckResourceAttr(list, "items.0.aws.0.bucket", "terraform-aws-bucket"),
+				resource.TestCheckResourceAttr(list, "items.1.id", "2"),
+				resource.TestCheckResourceAttr(list, "items.1.cloud_provider", "gce"),
+				resource.TestCheckResourceAttr(list, "items.1.gce.0.project", "project gce"),
+				resource.TestCheckResourceAttr(list, "items.2.cloud_provider", "oci"),
+				resource.TestCheckResourceAttr(list, "items.2.oci.0.oci_tenancy_id", "ocid1.tenancy.oc1..aaaa"),
+				resource.TestCheckResourceAttr(list, "items.3.cloud_provider", "azure"),
+				resource.TestCheckResourceAttr(list, "items.3.azure.0.location", "centralus"),
+			),
+		}},
+	})
+}
+
+func TestDataSourceCloudExportList_Empty(t *testing.T) {
+	t.Parallel()
+	srv, _ := newFake(t)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
-		Steps: []resource.TestStep{
-			{
-				Config: makeTestCloudExportDataSourceList(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					// more properties are verified in TestDataSourceCloudExportItem* tests
-					resource.TestCheckResourceAttr(exportsDS, "items.0.name", "test_terraform_aws_export"),
-					resource.TestCheckResourceAttr(exportsDS, "items.1.name", "test_terraform_gce_export"),
-					resource.TestCheckResourceAttr(exportsDS, "items.2.name", "test_terraform_ibm_export"),
-					resource.TestCheckResourceAttr(exportsDS, "items.3.name", "test_terraform_azure_export"),
-				),
-			},
-		},
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+data "kentik-cloudexport_list" "exports" {}
+`,
+			Check: resource.TestCheckResourceAttr("data.kentik-cloudexport_list.exports", "items.#", "0"),
+		}},
 	})
-}
-
-func makeTestCloudExportDataSourceList(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		  
-		data "kentik-cloudexport_list" "exports" {}
-	`,
-		apiURL,
-	)
-}
-
-// TestAccDataSourceCloudExportList is an acceptance test.
-// Checks if kentik-cloudexport_list data source method returns a list of resources.
-func TestAccDataSourceCloudExportList(t *testing.T) {
-	if skipIfNotAcceptance() {
-		checkRequiredEnvVariables(t)
-
-		ctx := context.Background()
-		client, err := newClient()
-		assert.NoError(t, err)
-
-		ceAWS, err := client.CloudExports.Create(ctx, newAWSCloudExportListForAccTest())
-		require.NoError(t, err) // do not continue the test on assertion failure
-		ceGCE, err := client.CloudExports.Create(ctx, newGCECloudExportListForAccTest())
-		require.NoError(t, err) // do not continue the test on assertion failure
-
-		defer func() {
-			// Do not rely on sweepers, because they are only a "backup" mechanism
-			err = client.CloudExports.Delete(ctx, ceAWS.ID)
-			assert.NoError(t, err)
-			err = client.CloudExports.Delete(ctx, ceGCE.ID)
-			assert.NoError(t, err)
-		}()
-
-		resource.ParallelTest(t, resource.TestCase{
-			ProviderFactories: providerFactories(),
-			Steps: []resource.TestStep{
-				{
-					Config: makeTestAccCloudExportDataSourceList(),
-					Check: resource.ComposeTestCheckFunc(
-						// more properties are verified in TestAccDataSourceCloudExportItem* tests
-						resource.TestCheckResourceAttrSet(exportsDS, "items.0.name"),
-						resource.TestCheckResourceAttrSet(exportsDS, "items.1.name"),
-					),
-				},
-			},
-		})
-	}
-}
-
-func makeTestAccCloudExportDataSourceList() string {
-	return `
-		data "kentik-cloudexport_list" "exports" {}
-	`
-}
-
-func newAWSCloudExportListForAccTest() *models.CloudExport {
-	ceAWS := models.NewAWSCloudExport(models.CloudExportAWSRequiredFields{
-		Name:   fmt.Sprintf("%s-aws-export-list", getAccTestPrefix()),
-		PlanID: getKentikPlanIDAccTests(),
-		AWSProperties: models.AWSPropertiesRequiredFields{
-			Bucket: fmt.Sprintf("%s-terraform-aws-bucket", getAccTestPrefix()),
-		},
-	})
-	ceAWS.Type = models.CloudExportTypeKentikManaged
-	ceAWS.Description = fmt.Sprintf("%s-description", getAccTestPrefix())
-	ceAWS.GetAWSProperties().IAMRoleARN = fmt.Sprintf("%s-iam-role-arn", getAccTestPrefix())
-	ceAWS.GetAWSProperties().Region = "us-east-2"
-	ceAWS.GetAWSProperties().DeleteAfterRead = pointer.ToBool(true)
-	ceAWS.GetAWSProperties().MultipleBuckets = pointer.ToBool(true)
-	return ceAWS
-}
-
-func newGCECloudExportListForAccTest() *models.CloudExport {
-	ceGCE := models.NewGCECloudExport(models.CloudExportGCERequiredFields{
-		Name:   fmt.Sprintf("%s-gce-export-list", getAccTestPrefix()),
-		PlanID: getKentikPlanIDAccTests(),
-		GCEProperties: models.GCEPropertiesRequiredFields{
-			Project:      "project gce",
-			Subscription: fmt.Sprintf("%s-subscription gce", getAccTestPrefix()),
-		},
-	})
-	ceGCE.Type = models.CloudExportTypeCustomerManaged
-	ceGCE.Description = fmt.Sprintf("%s-description", getAccTestPrefix())
-	return ceGCE
 }

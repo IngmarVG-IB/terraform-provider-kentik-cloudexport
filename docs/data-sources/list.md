@@ -3,22 +3,25 @@
 page_title: "kentik-cloudexport_list Data Source - kentik-cloudexport"
 subcategory: ""
 description: |-
-  Data source representing list of cloud exports
+  Lists all Kentik cloud exports in the account (Kentik API cloud_export/v202506).
 ---
 
 # kentik-cloudexport_list (Data Source)
 
-Data source representing list of cloud exports
+Lists all Kentik cloud exports in the account (Kentik API `cloud_export/v202506`).
 
 ## Example Usage
 
 ```terraform
-# fetch all cloud exports
-data "kentik-cloudexport_list" "exports" {
+# List all cloud exports in the account.
+data "kentik-cloudexport_list" "exports" {}
+
+output "export_names" {
+  value = [for e in data.kentik-cloudexport_list.exports.items : e.name]
 }
 
-output "export_list" {
-  value = data.kentik-cloudexport_list.exports
+output "aws_exports" {
+  value = [for e in data.kentik-cloudexport_list.exports.items : e.id if e.cloud_provider == "aws"]
 }
 ```
 
@@ -28,7 +31,8 @@ output "export_list" {
 ### Read-Only
 
 - `id` (String) The ID of this resource.
-- `items` (List of Object) (see [below for nested schema](#nestedatt--items))
+- `invalid_exports_count` (Number) Number of cloud exports with invalid data, which the API does not return.
+- `items` (List of Object) All cloud exports with valid data. (see [below for nested schema](#nestedatt--items))
 
 <a id="nestedatt--items"></a>
 ### Nested Schema for `items`
@@ -38,15 +42,19 @@ Read-Only:
 - `aws` (List of Object) (see [below for nested schema](#nestedobjatt--items--aws))
 - `azure` (List of Object) (see [below for nested schema](#nestedobjatt--items--azure))
 - `bgp` (List of Object) (see [below for nested schema](#nestedobjatt--items--bgp))
+- `cdate` (String)
 - `cloud_provider` (String)
 - `current_status` (List of Object) (see [below for nested schema](#nestedobjatt--items--current_status))
 - `description` (String)
+- `edate` (String)
 - `enabled` (Boolean)
 - `gce` (List of Object) (see [below for nested schema](#nestedobjatt--items--gce))
 - `ibm` (List of Object) (see [below for nested schema](#nestedobjatt--items--ibm))
 - `id` (String)
 - `name` (String)
+- `oci` (List of Object) (see [below for nested schema](#nestedobjatt--items--oci))
 - `plan_id` (String)
+- `sampling` (List of Object) (see [below for nested schema](#nestedobjatt--items--sampling))
 - `type` (String)
 
 <a id="nestedobjatt--items--aws"></a>
@@ -54,11 +62,21 @@ Read-Only:
 
 Read-Only:
 
+- `aws_iam_role_arn_is_org` (Boolean)
 - `bucket` (String)
+- `bucket_prefix` (String)
+- `collect_firewall_logs` (Boolean)
+- `collect_flow_logs` (Boolean)
+- `collect_metrics` (Boolean)
 - `delete_after_read` (Boolean)
 - `iam_role_arn` (String)
+- `metadata_only` (Boolean)
 - `multiple_buckets` (Boolean)
 - `region` (String)
+- `secondary_aws_accounts` (List of String)
+- `secondary_aws_blocked_accounts` (List of String)
+- `secondary_aws_regions` (List of String)
+- `secondary_aws_suffix` (String)
 
 
 <a id="nestedobjatt--items--azure"></a>
@@ -100,6 +118,9 @@ Read-Only:
 
 Read-Only:
 
+- `collect_flow_logs` (Boolean)
+- `collect_metrics` (Boolean)
+- `metadata_only` (Boolean)
 - `project` (String)
 - `subscription` (String)
 
@@ -110,3 +131,30 @@ Read-Only:
 Read-Only:
 
 - `bucket` (String)
+
+
+<a id="nestedobjatt--items--oci"></a>
+### Nested Schema for `items.oci`
+
+Read-Only:
+
+- `metadata_only` (Boolean)
+- `oci_bucket_name` (String)
+- `oci_bucket_namespace_name` (String)
+- `oci_collect_flow_logs` (Boolean)
+- `oci_compartment_id` (List of String)
+- `oci_default_region` (String)
+- `oci_flow_object_name_prefix` (String)
+- `oci_service_connector_ocid` (String)
+- `oci_tenancy_id` (String)
+- `oci_user_id` (String)
+
+
+<a id="nestedobjatt--items--sampling"></a>
+### Nested Schema for `items.sampling`
+
+Read-Only:
+
+- `sampling_enabled` (Boolean)
+- `sampling_rate` (Number)
+- `sampling_type` (String)

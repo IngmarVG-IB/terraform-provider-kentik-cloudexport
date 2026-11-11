@@ -10,10 +10,14 @@ import (
 	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/provider"
 )
 
+// version is set by GoReleaser through -ldflags "-X main.version=...".
+var version = "dev" //nolint:gochecknoglobals
+
 func main() {
 	var debugMode bool
 	flag.BoolVar(&debugMode, "debug", false, "set to true to run the provider with support for debuggers like Delve")
 	flag.Parse()
+	provider.Version = version
 
 	opts := &plugin.ServeOpts{ProviderFunc: provider.New, Debug: debugMode}
 

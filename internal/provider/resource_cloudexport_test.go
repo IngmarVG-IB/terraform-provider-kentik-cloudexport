@@ -1,861 +1,501 @@
 package provider_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	cloudexport "github.com/kentik/api-schema-public/gen/go/kentik/cloud_export/v202506"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kentik/terraform-provider-kentik-cloudexport/internal/kentikapi/kentikapitest"
 )
 
-// Note: we only check the user-provided values as we don't control the server-provided ones
+// checkStored runs fn against the object the fake API holds for resource name,
+// so tests assert what was actually sent over gRPC, not only Terraform state.
+func checkStored(fake *kentikapitest.CloudExportServer, name string, fn func(*cloudexport.CloudExport) error) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[name]
+		if !ok {
+			return fmt.Errorf("resource %s not in state", name)
+		}
+		e := fake.Get(rs.Primary.ID)
+		if e == nil {
+			return fmt.Errorf("cloud export %s not stored by the fake API", rs.Primary.ID)
+		}
+		return fn(e)
+	}
+}
 
-const (
-	ceAWSResource   = "kentik-cloudexport_item.test_aws"
-	ceAzureResource = "kentik-cloudexport_item.test_azure"
-	ceGCEResource   = "kentik-cloudexport_item.test_gce"
-	ceIBMResource   = "kentik-cloudexport_item.test_ibm"
-)
+func checkDestroyed(fake *kentikapitest.CloudExportServer) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		if n := fake.Len(); n != 0 {
+			return fmt.Errorf("%d cloud exports left after destroy", n)
+		}
+		return nil
+	}
+}
+
+const awsName = "kentik-cloudexport_item.test_aws"
+
+// The create step uses a v0.4-style configuration, including attributes that
+// v202506 dropped (multiple_buckets, bgp), to prove existing configs still apply.
+const awsCreateConfig = providerConfig + `
+resource "kentik-cloudexport_item" "test_aws" {
+  name           = "resource_test_terraform_aws_export"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  description    = "resource test aws export"
+  plan_id        = "9948"
+  cloud_provider = "aws"
+  bgp {
+    apply_bgp         = true
+    use_bgp_device_id = "1234"
+    device_bgp_type   = "router"
+  }
+  aws {
+    bucket            = "resource-terraform-aws-bucket"
+    iam_role_arn      = "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"
+    region            = "eu-central-1"
+    delete_after_read = true
+    multiple_buckets  = true
+  }
+}
+`
+
+const awsUpdateConfig = providerConfig + `
+resource "kentik-cloudexport_item" "test_aws" {
+  name           = "resource_test_terraform_aws_export_updated"
+  type           = "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
+  enabled        = false
+  description    = "resource test aws export updated"
+  plan_id        = "3333"
+  cloud_provider = "aws"
+  aws {
+    bucket                         = "resource-terraform-aws-bucket-updated"
+    bucket_prefix                  = "flows/"
+    iam_role_arn                   = "arn:aws:iam::003740049406:role/trafficTerraformIngestRole_updated"
+    region                         = "us-west-2"
+    collect_flow_logs              = false
+    collect_firewall_logs          = true
+    aws_iam_role_arn_is_org        = true
+    secondary_aws_accounts         = ["111111111111"]
+    secondary_aws_blocked_accounts = ["999999999999"]
+    secondary_aws_regions          = ["us-east-1", "eu-west-1"]
+    secondary_aws_suffix           = "KentikRole"
+  }
+  sampling {
+    sampling_enabled = true
+    sampling_type    = "CLOUD_EXPORT_SAMPLING_TYPE_RATE"
+    sampling_rate    = 50
+  }
+}
+`
 
 func TestResourceCloudExportAWS(t *testing.T) {
 	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
+	srv, fake := newFake(t)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
+		ProtoV5ProviderFactories: factories(srv),
+		CheckDestroy:             checkDestroyed(fake),
 		Steps: []resource.TestStep{
 			{
-				Config: makeTestResourceCloudExportCreateAWS(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceAWSResource, "id"),
-					resource.TestCheckResourceAttr(ceAWSResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-					resource.TestCheckResourceAttr(ceAWSResource, "enabled", "true"),
-					resource.TestCheckResourceAttr(ceAWSResource, "name", "resource_test_terraform_aws_export"),
-					resource.TestCheckResourceAttr(ceAWSResource, "description", "resource test aws export"),
-					resource.TestCheckResourceAttr(ceAWSResource, "plan_id", "9948"),
-					resource.TestCheckResourceAttr(ceAWSResource, "cloud_provider", "aws"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.apply_bgp", "true"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.use_bgp_device_id", "1234"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.device_bgp_type", "router"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.bucket", "resource-terraform-aws-bucket"),
-					resource.TestCheckResourceAttr(
-						ceAWSResource, "aws.0.iam_role_arn", "arn:aws:iam::003740049406:role/trafficTerraformIngestRole",
-					),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.region", "eu-central-1"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.delete_after_read", "true"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.multiple_buckets", "true"),
+				Config: awsCreateConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet(awsName, "id"),
+					resource.TestCheckResourceAttr(awsName, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
+					resource.TestCheckResourceAttr(awsName, "enabled", "true"),
+					resource.TestCheckResourceAttr(awsName, "name", "resource_test_terraform_aws_export"),
+					resource.TestCheckResourceAttr(awsName, "description", "resource test aws export"),
+					resource.TestCheckResourceAttr(awsName, "plan_id", "9948"),
+					resource.TestCheckResourceAttr(awsName, "cloud_provider", "aws"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.bucket", "resource-terraform-aws-bucket"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.iam_role_arn", "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.region", "eu-central-1"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.delete_after_read", "true"),
+					// Deprecated, kept from configuration:
+					resource.TestCheckResourceAttr(awsName, "aws.0.multiple_buckets", "true"),
+					resource.TestCheckResourceAttr(awsName, "bgp.0.apply_bgp", "true"),
+					resource.TestCheckResourceAttr(awsName, "bgp.0.use_bgp_device_id", "1234"),
+					// Server defaults for unset proto3 optional fields:
+					resource.TestCheckResourceAttr(awsName, "aws.0.collect_flow_logs", "true"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.collect_firewall_logs", "false"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.metadata_only", "false"),
+					resource.TestCheckResourceAttr(awsName, "sampling.0.sampling_type", "CLOUD_EXPORT_SAMPLING_TYPE_UNSAMPLED"),
+					resource.TestCheckResourceAttr(awsName, "current_status.0.status", "OK"),
+					resource.TestCheckResourceAttrSet(awsName, "cdate"),
+					resource.TestCheckResourceAttrSet(awsName, "edate"),
+					checkStored(fake, awsName, func(e *cloudexport.CloudExport) error {
+						aws := e.GetAws()
+						if aws == nil {
+							return errors.New("aws properties not sent")
+						}
+						if e.GetCloudProvider() != cloudexport.CloudProvider_CLOUD_PROVIDER_AWS {
+							return fmt.Errorf("cloud_provider = %v", e.GetCloudProvider())
+						}
+						if !aws.GetDeleteAfterRead() { //nolint:staticcheck // deprecated field still supported
+							return errors.New("delete_after_read not sent")
+						}
+						return nil
+					}),
 				),
 			},
 			{
-				Config: makeTestResourceCloudExportUpdateAWS(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceAWSResource, "id"),
-					resource.TestCheckResourceAttr(ceAWSResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-					resource.TestCheckResourceAttr(ceAWSResource, "enabled", "false"),
-					resource.TestCheckResourceAttr(ceAWSResource, "name", "resource_test_terraform_aws_export_updated"),
-					resource.TestCheckResourceAttr(ceAWSResource, "description", "resource test aws export updated"),
-					resource.TestCheckResourceAttr(ceAWSResource, "plan_id", "3333"),
-					resource.TestCheckResourceAttr(ceAWSResource, "cloud_provider", "aws"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.apply_bgp", "false"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.use_bgp_device_id", "4444"),
-					resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.device_bgp_type", "dns"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.bucket", "resource-terraform-aws-bucket-updated"),
-					resource.TestCheckResourceAttr(
-						ceAWSResource,
-						"aws.0.iam_role_arn",
-						"arn:aws:iam::003740049406:role/trafficTerraformIngestRole_updated",
-					),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.region", "eu-central-1-updated"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.delete_after_read", "false"),
-					resource.TestCheckResourceAttr(ceAWSResource, "aws.0.multiple_buckets", "false"),
+				Config: awsUpdateConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(awsName, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
+					resource.TestCheckResourceAttr(awsName, "enabled", "false"),
+					resource.TestCheckResourceAttr(awsName, "name", "resource_test_terraform_aws_export_updated"),
+					resource.TestCheckResourceAttr(awsName, "description", "resource test aws export updated"),
+					resource.TestCheckResourceAttr(awsName, "plan_id", "3333"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.bucket", "resource-terraform-aws-bucket-updated"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.bucket_prefix", "flows/"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.region", "us-west-2"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.delete_after_read", "false"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.collect_flow_logs", "false"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.collect_firewall_logs", "true"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.aws_iam_role_arn_is_org", "true"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.secondary_aws_regions.#", "2"),
+					resource.TestCheckResourceAttr(awsName, "aws.0.secondary_aws_suffix", "KentikRole"),
+					resource.TestCheckResourceAttr(awsName, "sampling.0.sampling_enabled", "true"),
+					resource.TestCheckResourceAttr(awsName, "sampling.0.sampling_type", "CLOUD_EXPORT_SAMPLING_TYPE_RATE"),
+					resource.TestCheckResourceAttr(awsName, "sampling.0.sampling_rate", "50"),
+					checkStored(fake, awsName, func(e *cloudexport.CloudExport) error {
+						aws := e.GetAws()
+						switch {
+						case aws.CollectFlowLogs == nil || aws.GetCollectFlowLogs():
+							return errors.New("collect_flow_logs=false not sent")
+						case aws.CollectMetrics == nil:
+							return errors.New("server-computed collect_metrics not sent back on update")
+						case e.GetSampling().GetSamplingRate() != 50:
+							return fmt.Errorf("sampling_rate = %d", e.GetSampling().GetSamplingRate())
+						case len(aws.GetSecondaryAwsBlockedAccounts()) != 1:
+							return fmt.Errorf("secondary_aws_blocked_accounts = %v", aws.GetSecondaryAwsBlockedAccounts())
+						}
+						return nil
+					}),
 				),
 			},
 			{
-				Config: makeTestResourceCloudExportDestroy(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					testResourceDoesntExists(ceAWSResource),
-				),
+				ResourceName:      awsName,
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
+	})
+}
+
+func TestResourceCloudExportAWS_ExplicitOptionalBoolsOnCreate(t *testing.T) {
+	t.Parallel()
+	srv, fake := newFake(t)
+	const name = "kentik-cloudexport_item.explicit"
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		CheckDestroy:             checkDestroyed(fake),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+resource "kentik-cloudexport_item" "explicit" {
+  name           = "explicit"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "aws"
+  aws {
+    iam_role_arn      = "arn"
+    region            = "us-east-1"
+    metadata_only     = true
+    collect_flow_logs = false
+  }
+}
+`,
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr(name, "aws.0.metadata_only", "true"),
+				resource.TestCheckResourceAttr(name, "aws.0.collect_flow_logs", "false"),
+				resource.TestCheckResourceAttr(name, "aws.0.collect_metrics", "false"),
+				checkStored(fake, name, func(e *cloudexport.CloudExport) error {
+					aws := e.GetAws()
+					if aws.MetadataOnly == nil || !aws.GetMetadataOnly() || aws.CollectFlowLogs == nil || aws.GetCollectFlowLogs() {
+						return fmt.Errorf("explicit optional bools not sent on create: %v", aws)
+					}
+					return nil
+				}),
+			),
+		}},
 	})
 }
 
 func TestResourceCloudExportGCE(t *testing.T) {
 	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
-
-	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
-		Steps: []resource.TestStep{
-			{
-				Config: makeTestResourceCloudExportCreateGCE(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceGCEResource, "id"),
-					resource.TestCheckResourceAttr(ceGCEResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-					resource.TestCheckResourceAttr(ceGCEResource, "enabled", "true"),
-					resource.TestCheckResourceAttr(ceGCEResource, "name", "resource_test_terraform_gce_export"),
-					resource.TestCheckResourceAttr(ceGCEResource, "description", "resource test gce export"),
-					resource.TestCheckResourceAttr(ceGCEResource, "plan_id", "9948"),
-					resource.TestCheckResourceAttr(ceGCEResource, "cloud_provider", "gce"),
-					resource.TestCheckResourceAttr(ceGCEResource, "gce.0.project", "gce project"),
-					resource.TestCheckResourceAttr(ceGCEResource, "gce.0.subscription", "gce subscription"),
-				),
-			},
-			{
-				Config: makeTestResourceCloudExportUpdateGCE(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceGCEResource, "id"),
-					resource.TestCheckResourceAttr(ceGCEResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-					resource.TestCheckResourceAttr(ceGCEResource, "enabled", "false"),
-					resource.TestCheckResourceAttr(ceGCEResource, "name", "resource_test_terraform_gce_export_updated"),
-					resource.TestCheckResourceAttr(ceGCEResource, "description", "resource test gce export updated"),
-					resource.TestCheckResourceAttr(ceGCEResource, "plan_id", "3333"),
-					resource.TestCheckResourceAttr(ceGCEResource, "cloud_provider", "gce"),
-					resource.TestCheckResourceAttr(ceGCEResource, "gce.0.project", "gce project updated"),
-					resource.TestCheckResourceAttr(ceGCEResource, "gce.0.subscription", "gce subscription updated"),
-				),
-			},
-			{
-				Config: makeTestResourceCloudExportDestroy(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					testResourceDoesntExists(ceGCEResource),
-				),
-			},
-		},
-	})
+	srv, fake := newFake(t)
+	const name = "kentik-cloudexport_item.test_gce"
+	config := func(suffix string, collectMetrics bool) string {
+		return providerConfig + fmt.Sprintf(`
+resource "kentik-cloudexport_item" "test_gce" {
+  name           = "resource_test_terraform_gce_export%[1]s"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  description    = "resource test gce export%[1]s"
+  plan_id        = "9948"
+  cloud_provider = "gce"
+  gce {
+    project         = "gce project%[1]s"
+    subscription    = "gce subscription%[1]s"
+    collect_metrics = %[2]t
+  }
 }
-
-func TestResourceCloudExportIBM(t *testing.T) {
-	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
+`, suffix, collectMetrics)
+	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
+		ProtoV5ProviderFactories: factories(srv),
+		CheckDestroy:             checkDestroyed(fake),
 		Steps: []resource.TestStep{
 			{
-				Config: makeTestResourceCloudExportCreateIBM(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceIBMResource, "id"),
-					resource.TestCheckResourceAttr(ceIBMResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-					resource.TestCheckResourceAttr(ceIBMResource, "enabled", "true"),
-					resource.TestCheckResourceAttr(ceIBMResource, "name", "resource_test_terraform_ibm_export"),
-					resource.TestCheckResourceAttr(ceIBMResource, "description", "resource test ibm export"),
-					resource.TestCheckResourceAttr(ceIBMResource, "plan_id", "9948"),
-					resource.TestCheckResourceAttr(ceIBMResource, "cloud_provider", "ibm"),
-					resource.TestCheckResourceAttr(ceIBMResource, "ibm.0.bucket", "ibm-bucket"),
+				Config: config("", false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "cloud_provider", "gce"),
+					resource.TestCheckResourceAttr(name, "gce.0.project", "gce project"),
+					resource.TestCheckResourceAttr(name, "gce.0.subscription", "gce subscription"),
+					resource.TestCheckResourceAttr(name, "gce.0.collect_flow_logs", "true"),
+					resource.TestCheckResourceAttr(name, "gce.0.collect_metrics", "false"),
+					checkStored(fake, name, func(e *cloudexport.CloudExport) error {
+						if !e.GetGce().GetCollectFlowLogs() {
+							return errors.New("gce collect_flow_logs must default to true, as in v0.4")
+						}
+						return nil
+					}),
 				),
 			},
 			{
-				Config: makeTestResourceCloudExportUpdateIBM(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceIBMResource, "id"),
-					resource.TestCheckResourceAttr(ceIBMResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-					resource.TestCheckResourceAttr(ceIBMResource, "enabled", "false"),
-					resource.TestCheckResourceAttr(ceIBMResource, "name", "resource_test_terraform_ibm_export_updated"),
-					resource.TestCheckResourceAttr(ceIBMResource, "description", "resource test ibm export updated"),
-					resource.TestCheckResourceAttr(ceIBMResource, "plan_id", "3333"),
-					resource.TestCheckResourceAttr(ceIBMResource, "cloud_provider", "ibm"),
-					resource.TestCheckResourceAttr(ceIBMResource, "ibm.0.bucket", "ibm-bucket-updated"),
+				Config: config(" updated", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "name", "resource_test_terraform_gce_export updated"),
+					resource.TestCheckResourceAttr(name, "gce.0.project", "gce project updated"),
+					resource.TestCheckResourceAttr(name, "gce.0.collect_metrics", "true"),
 				),
 			},
-			{
-				Config: makeTestResourceCloudExportDestroy(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					testResourceDoesntExists(ceIBMResource),
-				),
-			},
+			{ResourceName: name, ImportState: true, ImportStateVerify: true},
 		},
 	})
 }
 
 func TestResourceCloudExportAzure(t *testing.T) {
 	t.Parallel()
-
-	server := newTestAPIServer(t, makeInitialCloudExports())
-	server.Start()
-	defer server.Stop()
+	srv, fake := newFake(t)
+	const name = "kentik-cloudexport_item.test_azure"
+	config := func(suffix string, principal bool) string {
+		return providerConfig + fmt.Sprintf(`
+resource "kentik-cloudexport_item" "test_azure" {
+  name           = "resource_test_terraform_azure_export%[1]s"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "azure"
+  azure {
+    location                   = "centralus%[1]s"
+    resource_group             = "traffic-generator%[1]s"
+    storage_account            = "kentikstorage%[1]s"
+    subscription_id            = "7777%[1]s"
+    security_principal_enabled = %[2]t
+  }
+}
+`, suffix, principal)
+	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProviderFactories: providerFactories(),
+		ProtoV5ProviderFactories: factories(srv),
+		CheckDestroy:             checkDestroyed(fake),
 		Steps: []resource.TestStep{
 			{
-				Config: makeTestResourceCloudExportCreateAzure(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceAzureResource, "id"),
-					resource.TestCheckResourceAttr(ceAzureResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-					resource.TestCheckResourceAttr(ceAzureResource, "enabled", "true"),
-					resource.TestCheckResourceAttr(ceAzureResource, "name", "resource_test_terraform_azure_export"),
-					resource.TestCheckResourceAttr(ceAzureResource, "description", "resource test azure export"),
-					resource.TestCheckResourceAttr(ceAzureResource, "plan_id", "9948"),
-					resource.TestCheckResourceAttr(ceAzureResource, "cloud_provider", "azure"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.location", "centralus"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.resource_group", "traffic-generator"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.storage_account", "kentikstorage"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.subscription_id", "7777"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.security_principal_enabled", "true"),
+				Config: config("", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "cloud_provider", "azure"),
+					resource.TestCheckResourceAttr(name, "description", ""),
+					resource.TestCheckResourceAttr(name, "azure.0.location", "centralus"),
+					resource.TestCheckResourceAttr(name, "azure.0.resource_group", "traffic-generator"),
+					resource.TestCheckResourceAttr(name, "azure.0.storage_account", "kentikstorage"),
+					resource.TestCheckResourceAttr(name, "azure.0.subscription_id", "7777"),
+					resource.TestCheckResourceAttr(name, "azure.0.security_principal_enabled", "true"),
 				),
 			},
 			{
-				Config: makeTestResourceCloudExportUpdateAzure(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(ceAzureResource, "id"),
-					resource.TestCheckResourceAttr(ceAzureResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-					resource.TestCheckResourceAttr(ceAzureResource, "enabled", "false"),
-					resource.TestCheckResourceAttr(ceAzureResource, "name", "resource_test_terraform_azure_export_updated"),
-					resource.TestCheckResourceAttr(ceAzureResource, "description", "resource test azure export updated"),
-					resource.TestCheckResourceAttr(ceAzureResource, "plan_id", "3333"),
-					resource.TestCheckResourceAttr(ceAzureResource, "cloud_provider", "azure"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.location", "centralus-updated"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.resource_group", "traffic-generator-updated"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.storage_account", "kentikstorage-updated"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.subscription_id", "8888"),
-					resource.TestCheckResourceAttr(ceAzureResource, "azure.0.security_principal_enabled", "false"),
+				Config: config("-updated", false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "azure.0.location", "centralus-updated"),
+					resource.TestCheckResourceAttr(name, "azure.0.security_principal_enabled", "false"),
+				),
+			},
+			{ResourceName: name, ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
+
+func TestResourceCloudExportOCI(t *testing.T) {
+	t.Parallel()
+	srv, fake := newFake(t)
+	const name = "kentik-cloudexport_item.test_oci"
+	config := func(region string, compartments string) string {
+		return providerConfig + fmt.Sprintf(`
+resource "kentik-cloudexport_item" "test_oci" {
+  name           = "resource_test_terraform_oci_export"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "oci"
+  oci {
+    oci_tenancy_id              = "ocid1.tenancy.oc1..aaaa"
+    oci_default_region          = %q
+    oci_user_id                 = "ocid1.user.oc1..cccc"
+    oci_compartment_id          = %s
+    oci_bucket_name             = "flow-logs"
+    oci_bucket_namespace_name   = "ns"
+    oci_service_connector_ocid  = "ocid1.serviceconnector.oc1..dddd"
+    oci_flow_object_name_prefix = "prefix"
+  }
+}
+`, region, compartments)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		CheckDestroy:             checkDestroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config("eu-frankfurt-1", `["ocid1.compartment.oc1..bbbb"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "cloud_provider", "oci"),
+					resource.TestCheckResourceAttr(name, "oci.0.oci_default_region", "eu-frankfurt-1"),
+					resource.TestCheckResourceAttr(name, "oci.0.oci_collect_flow_logs", "true"),
+					resource.TestCheckResourceAttr(name, "oci.0.metadata_only", "false"),
+					resource.TestCheckResourceAttr(name, "oci.0.oci_compartment_id.#", "1"),
+					checkStored(fake, name, func(e *cloudexport.CloudExport) error {
+						if e.GetOci().GetOciServiceConnectorOcid() != "ocid1.serviceconnector.oc1..dddd" {
+							return errors.New("oci_service_connector_ocid not sent")
+						}
+						return nil
+					}),
 				),
 			},
 			{
-				Config: makeTestResourceCloudExportDestroy(server.URL()),
-				Check: resource.ComposeTestCheckFunc(
-					testResourceDoesntExists(ceAzureResource),
+				Config: config("us-ashburn-1", `["a", "b"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(name, "oci.0.oci_default_region", "us-ashburn-1"),
+					resource.TestCheckResourceAttr(name, "oci.0.oci_compartment_id.#", "2"),
 				),
+			},
+			{ResourceName: name, ImportState: true, ImportStateVerify: true},
+		},
+	})
+}
+
+func TestResourceCloudExport_IBMIsRejectedAtPlan(t *testing.T) {
+	t.Parallel()
+	srv, fake := newFake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+resource "kentik-cloudexport_item" "test_ibm" {
+  name           = "resource_test_terraform_ibm_export"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "ibm"
+  ibm {
+    bucket = "ibm-bucket"
+  }
+}
+`,
+			ExpectError: regexp.MustCompile(`expected cloud_provider to be one of`),
+		}},
+	})
+	assert.Equal(t, 0, fake.Len())
+}
+
+func TestResourceCloudExport_ProviderBlockMustMatch(t *testing.T) {
+	t.Parallel()
+	srv, _ := newFake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+resource "kentik-cloudexport_item" "mismatch" {
+  name           = "mismatch"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "aws"
+  gce {
+    project = "p"
+  }
+}
+`,
+			ExpectError: regexp.MustCompile(`a aws \{\.\.\.\} block is required`),
+		}},
+	})
+}
+
+func TestResourceCloudExport_DuplicateNameFails(t *testing.T) {
+	t.Parallel()
+	srv, _ := newFake(t, seedExports()...)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{{
+			Config: providerConfig + `
+resource "kentik-cloudexport_item" "dup" {
+  name           = "test_terraform_aws_export"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "9948"
+  cloud_provider = "aws"
+  aws {
+    iam_role_arn = "arn"
+    region       = "us-east-1"
+  }
+}
+`,
+			ExpectError: regexp.MustCompile(`(?s)Failed to create cloud export.*AlreadyExists`),
+		}},
+	})
+}
+
+// Deleting the export outside Terraform must lead to a plan that recreates it.
+func TestResourceCloudExport_DeletedOutsideTerraform(t *testing.T) {
+	t.Parallel()
+	srv, fake := newFake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV5ProviderFactories: factories(srv),
+		Steps: []resource.TestStep{
+			{Config: awsCreateConfig},
+			{
+				PreConfig: func() {
+					for _, e := range listAll(t, fake) {
+						_, err := fake.DeleteCloudExport(context.Background(), &cloudexport.DeleteCloudExportRequest{Id: e.GetId()})
+						require.NoError(t, err)
+					}
+				},
+				Config:             awsCreateConfig,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})
 }
 
-func testResourceDoesntExists(name string) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		// find the corresponding state object
-		_, exists := s.RootModule().Resources[name]
-		if exists {
-			return fmt.Errorf("Resource %q found when not expected", name)
-		}
-
-		return nil
-	}
-}
-
-func makeTestResourceCloudExportCreateAWS(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_aws" {
-			name= "resource_test_terraform_aws_export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "resource test aws export"
-			plan_id= "9948"
-			cloud_provider= "aws"
-			bgp {
-				apply_bgp= true
-				use_bgp_device_id= "1234"
-				device_bgp_type= "router"
-			}
-			aws {
-				bucket= "resource-terraform-aws-bucket"
-				iam_role_arn= "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"
-				region= "eu-central-1"
-				delete_after_read= true
-				multiple_buckets= true
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportUpdateAWS(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_aws" {
-			name= "resource_test_terraform_aws_export_updated"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=false
-			description= "resource test aws export updated"
-			plan_id= "3333"
-			cloud_provider= "aws"
-			bgp {
-				apply_bgp= false
-				use_bgp_device_id= "4444"
-				device_bgp_type= "dns"
-			}
-			aws {
-				bucket= "resource-terraform-aws-bucket-updated"
-				iam_role_arn= "arn:aws:iam::003740049406:role/trafficTerraformIngestRole_updated"
-				region= "eu-central-1-updated"
-				delete_after_read= false
-				multiple_buckets= false
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportCreateGCE(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_gce" {
-			name= "resource_test_terraform_gce_export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "resource test gce export"
-			plan_id= "9948"
-			cloud_provider= "gce"
-			gce {
-				project= "gce project"
-				subscription= "gce subscription"
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportUpdateGCE(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_gce" {
-			name= "resource_test_terraform_gce_export_updated"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=false
-			description= "resource test gce export updated"
-			plan_id= "3333"
-			cloud_provider= "gce"
-			gce {
-				project= "gce project updated"
-				subscription= "gce subscription updated"
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportCreateIBM(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_ibm" {
-			name= "resource_test_terraform_ibm_export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "resource test ibm export"
-			plan_id= "9948"
-			cloud_provider= "ibm"
-			ibm {
-				bucket= "ibm-bucket"
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportUpdateIBM(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_ibm" {
-			name= "resource_test_terraform_ibm_export_updated"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=false
-			description= "resource test ibm export updated"
-			plan_id= "3333"
-			cloud_provider= "ibm"
-			ibm {
-				bucket= "ibm-bucket-updated"
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportCreateAzure(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_azure" {
-			name= "resource_test_terraform_azure_export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "resource test azure export"
-			plan_id= "9948"
-			cloud_provider= "azure"
-			azure {
-				location= "centralus"
-				resource_group= "traffic-generator"
-				storage_account= "kentikstorage"
-				subscription_id= "7777"
-				security_principal_enabled=true
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportUpdateAzure(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		
-		resource "kentik-cloudexport_item" "test_azure" {
-			name= "resource_test_terraform_azure_export_updated"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=false
-			description= "resource test azure export updated"
-			plan_id= "3333"
-			cloud_provider= "azure"
-			azure {
-				location= "centralus-updated"
-				resource_group= "traffic-generator-updated"
-				storage_account= "kentikstorage-updated"
-				subscription_id= "8888"
-				security_principal_enabled=false
-			}
-		  }
-		`,
-		apiURL,
-	)
-}
-
-func makeTestResourceCloudExportDestroy(apiURL string) string {
-	return fmt.Sprintf(`
-		provider "kentik-cloudexport" {
-			apiurl = "%v"
-			email = "joe.doe@example.com"
-			token = "dummy-token"
-		}
-		`, apiURL,
-	)
-}
-
-func TestAccResourceCloudExportAWS(t *testing.T) {
-	if skipIfNotAcceptance() {
-		checkRequiredEnvVariables(t)
-		resource.ParallelTest(t, resource.TestCase{
-			ProviderFactories: providerFactories(),
-			Steps: []resource.TestStep{
-				{
-					Config: makeTestAccResourceCloudExportCreateAWS(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceAWSResource, "id"),
-						resource.TestCheckResourceAttr(ceAWSResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-						resource.TestCheckResourceAttr(ceAWSResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceAWSResource, "name", fmt.Sprintf("%s-aws-export", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAWSResource, "description", fmt.Sprintf("%s-description", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAWSResource, "plan_id", getKentikPlanIDAccTests()),
-						resource.TestCheckResourceAttr(ceAWSResource, "cloud_provider", "aws"),
-						resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.apply_bgp", "true"),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"bgp.0.use_bgp_device_id",
-							fmt.Sprintf("%s-bgp-id", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.device_bgp_type", "router"),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.bucket", fmt.Sprintf("%s-aws-bucket", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"aws.0.iam_role_arn",
-							fmt.Sprintf("%s-iam-role-arn", getAccTestPrefix()),
-						),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.region", "eu-central-1"),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.delete_after_read", "true"),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.multiple_buckets", "true"),
-					),
-				},
-				{
-					Config: makeTestAccResourceCloudExportUpdateAWS(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceAWSResource, "id"),
-						resource.TestCheckResourceAttr(ceAWSResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-						resource.TestCheckResourceAttr(ceAWSResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceAWSResource, "name", fmt.Sprintf("%s-aws-export-update", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"description",
-							fmt.Sprintf("%s-description-update", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAWSResource, "cloud_provider", "aws"),
-						resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.apply_bgp", "false"),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"bgp.0.use_bgp_device_id",
-							fmt.Sprintf("%s-bgp-id-update", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAWSResource, "bgp.0.device_bgp_type", "dns"),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"aws.0.bucket",
-							fmt.Sprintf("%s-aws-bucket-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAWSResource,
-							"aws.0.iam_role_arn",
-							fmt.Sprintf("%s-iam-role-arn-updated", getAccTestPrefix()),
-						),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.region", "eu-central-1-updated"),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.delete_after_read", "false"),
-						resource.TestCheckResourceAttr(ceAWSResource, "aws.0.multiple_buckets", "false"),
-					),
-				},
-			},
-		})
-	}
-}
-
-func TestAccResourceCloudExportGCE(t *testing.T) {
-	if skipIfNotAcceptance() {
-		checkRequiredEnvVariables(t)
-		resource.ParallelTest(t, resource.TestCase{
-			ProviderFactories: providerFactories(),
-			Steps: []resource.TestStep{
-				{
-					Config: makeTestAccResourceCloudExportCreateGCE(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceGCEResource, "id"),
-						resource.TestCheckResourceAttr(ceGCEResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-						resource.TestCheckResourceAttr(ceGCEResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceGCEResource, "name", fmt.Sprintf("%s-gce-export", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceGCEResource, "description", fmt.Sprintf("%s-description", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceGCEResource, "plan_id", getKentikPlanIDAccTests()),
-						resource.TestCheckResourceAttr(ceGCEResource, "cloud_provider", "gce"),
-						resource.TestCheckResourceAttr(ceGCEResource, "gce.0.project", fmt.Sprintf("%s-gce project", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceGCEResource,
-							"gce.0.subscription",
-							fmt.Sprintf("%s-gce subscription", getAccTestPrefix())),
-					),
-				},
-				{
-					Config: makeTestAccResourceCloudExportUpdateGCE(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceGCEResource, "id"),
-						resource.TestCheckResourceAttr(ceGCEResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-						resource.TestCheckResourceAttr(ceGCEResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceGCEResource, "name", fmt.Sprintf("%s-gce-export-update", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceGCEResource,
-							"description",
-							fmt.Sprintf("%s-description-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceGCEResource, "cloud_provider", "gce"),
-						resource.TestCheckResourceAttr(
-							ceGCEResource,
-							"gce.0.project",
-							fmt.Sprintf("%s-gce project updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceGCEResource,
-							"gce.0.subscription",
-							fmt.Sprintf("%s-gce subscription updated", getAccTestPrefix())),
-					),
-				},
-			},
-		})
-	}
-}
-
-func TestAccResourceCloudExportIBM(t *testing.T) {
-	if skipIfNotAcceptance() {
-		checkRequiredEnvVariables(t)
-		resource.ParallelTest(t, resource.TestCase{
-			ProviderFactories: providerFactories(),
-			Steps: []resource.TestStep{
-				{
-					Config: makeTestAccResourceCloudExportCreateIBM(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceIBMResource, "id"),
-						resource.TestCheckResourceAttr(ceIBMResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-						resource.TestCheckResourceAttr(ceIBMResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceIBMResource, "name", fmt.Sprintf("%s-ibm-export", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceIBMResource, "description", fmt.Sprintf("%s-description", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceIBMResource, "plan_id", getKentikPlanIDAccTests()),
-						resource.TestCheckResourceAttr(ceIBMResource, "cloud_provider", "ibm"),
-						resource.TestCheckResourceAttr(ceIBMResource, "ibm.0.bucket", fmt.Sprintf("%s-ibm-bucket", getAccTestPrefix())),
-					),
-				},
-				{
-					Config: makeTestAccResourceCloudExportUpdateIBM(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceIBMResource, "id"),
-						resource.TestCheckResourceAttr(ceIBMResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-						resource.TestCheckResourceAttr(ceIBMResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceIBMResource, "name", fmt.Sprintf("%s-ibm-export-update", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceIBMResource,
-							"description",
-							fmt.Sprintf("%s-description-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceIBMResource, "cloud_provider", "ibm"),
-						resource.TestCheckResourceAttr(
-							ceIBMResource,
-							"ibm.0.bucket",
-							fmt.Sprintf("%s-ibm-bucket-up", getAccTestPrefix())),
-					),
-				},
-			},
-		})
-	}
-}
-
-func TestAccResourceCloudExportAzure(t *testing.T) {
-	if skipIfNotAcceptance() {
-		checkRequiredEnvVariables(t)
-		resource.ParallelTest(t, resource.TestCase{
-			ProviderFactories: providerFactories(),
-			Steps: []resource.TestStep{
-				{
-					Config: makeTestAccResourceCloudExportCreateAzure(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceAzureResource, "id"),
-						resource.TestCheckResourceAttr(ceAzureResource, "type", "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"),
-						resource.TestCheckResourceAttr(ceAzureResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(ceAzureResource, "name", fmt.Sprintf("%s-azure-export", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAzureResource, "description", fmt.Sprintf("%s-description", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAzureResource, "plan_id", getKentikPlanIDAccTests()),
-						resource.TestCheckResourceAttr(ceAzureResource, "cloud_provider", "azure"),
-						resource.TestCheckResourceAttr(ceAzureResource, "azure.0.location", "centralus"),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.resource_group",
-							fmt.Sprintf("%s-traffic-generator", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.storage_account",
-							fmt.Sprintf("%s-kentikstorage", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.subscription_id",
-							fmt.Sprintf("%s-sub-id", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAzureResource, "azure.0.security_principal_enabled", "true"),
-					),
-				},
-				{
-					Config: makeTestAccResourceCloudExportUpdateAzure(),
-					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttrSet(ceAzureResource, "id"),
-						resource.TestCheckResourceAttr(ceAzureResource, "type", "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"),
-						resource.TestCheckResourceAttr(ceAzureResource, "enabled", "true"),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"name",
-							fmt.Sprintf("%s-azure-export-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"description",
-							fmt.Sprintf("%s-description-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAzureResource, "cloud_provider", "azure"),
-						resource.TestCheckResourceAttr(ceAzureResource, "azure.0.location", "centralus-updated"),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.resource_group",
-							fmt.Sprintf("%s-traffic-generator-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.storage_account",
-							fmt.Sprintf("%s-kentik-storage-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(
-							ceAzureResource,
-							"azure.0.subscription_id",
-							fmt.Sprintf("%s-sub-id-updated", getAccTestPrefix())),
-						resource.TestCheckResourceAttr(ceAzureResource, "azure.0.security_principal_enabled", "false"),
-					),
-				},
-			},
-		})
-	}
-}
-
-func makeTestAccResourceCloudExportCreateAWS() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_aws" {
-			name= "%[1]s-aws-export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "%[1]s-description"
-			plan_id= %[2]s
-			cloud_provider= "aws"
-			bgp {
-				apply_bgp= true
-				use_bgp_device_id= "%[1]s-bgp-id"
-				device_bgp_type= "router"
-			}
-			aws {
-				bucket= "%[1]s-aws-bucket"
-				iam_role_arn= "%[1]s-iam-role-arn"
-				region= "eu-central-1"
-				delete_after_read= true
-				multiple_buckets= true
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportUpdateAWS() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_aws" {
-			name= "%[1]s-aws-export-update"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=true
-			description= "%[1]s-description-update"
-			plan_id= %[2]s
-			cloud_provider= "aws"
-			bgp {
-				apply_bgp= false
-				use_bgp_device_id= "%[1]s-bgp-id-update"
-				device_bgp_type= "dns"
-			}
-			aws {
-				bucket= "%[1]s-aws-bucket-updated"
-				iam_role_arn= "%[1]s-iam-role-arn-updated"
-				region= "eu-central-1-updated"
-				delete_after_read= false
-				multiple_buckets= false
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportCreateGCE() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_gce" {
-			name= "%[1]s-gce-export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "%[1]s-description"
-			plan_id= %[2]s
-			cloud_provider= "gce"
-			gce {
-				project= "%[1]s-gce project"
-				subscription= "%[1]s-gce subscription"
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportUpdateGCE() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_gce" {
-			name= "%[1]s-gce-export-update"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=true
-			description= "%[1]s-description-updated"
-			plan_id= %[2]s
-			cloud_provider= "gce"
-			gce {
-				project= "%[1]s-gce project updated"
-				subscription= "%[1]s-gce subscription updated"
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportCreateIBM() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_ibm" {
-			name= "%[1]s-ibm-export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "%[1]s-description"
-			plan_id= %[2]s
-			cloud_provider= "ibm"
-			ibm {
-				bucket= "%[1]s-ibm-bucket"
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportUpdateIBM() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_ibm" {
-			name= "%[1]s-ibm-export-update"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=true
-			description= "%[1]s-description-updated"
-			plan_id= %[2]s
-			cloud_provider= "ibm"
-			ibm {
-				bucket= "%[1]s-ibm-bucket-up"
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportCreateAzure() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_azure" {
-			name= "%[1]s-azure-export"
-			type= "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-			enabled=true
-			description= "%[1]s-description"
-			plan_id= %[2]s
-			cloud_provider= "azure"
-			azure {
-				location= "centralus"
-				resource_group= "%[1]s-traffic-generator"
-				storage_account= "%[1]s-kentikstorage"
-				subscription_id= "%[1]s-sub-id"
-				security_principal_enabled=true
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
-}
-
-func makeTestAccResourceCloudExportUpdateAzure() string {
-	return fmt.Sprintf(`
-		resource "kentik-cloudexport_item" "test_azure" {
-			name= "%[1]s-azure-export-updated"
-			type= "CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED"
-			enabled=true
-			description= "%[1]s-description-updated"
-			plan_id= %[2]s
-			cloud_provider= "azure"
-			azure {
-				location= "centralus-updated"
-				resource_group= "%[1]s-traffic-generator-updated"
-				storage_account= "%[1]s-kentik-storage-updated"
-				subscription_id= "%[1]s-sub-id-updated"
-				security_principal_enabled=false
-			}
-		  }
-		`, getAccTestPrefix(), getKentikPlanIDAccTests())
+func listAll(t *testing.T, fake *kentikapitest.CloudExportServer) []*cloudexport.CloudExport {
+	t.Helper()
+	resp, err := fake.ListCloudExports(context.Background(), &cloudexport.ListCloudExportsRequest{})
+	require.NoError(t, err)
+	return resp.GetExports()
 }

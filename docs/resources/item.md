@@ -3,70 +3,96 @@
 page_title: "kentik-cloudexport_item Resource - kentik-cloudexport"
 subcategory: ""
 description: |-
-  Resource representing cloud export item
+  Manages a Kentik cloud export (Kentik API cloud_export/v202506): the configuration Kentik uses to collect flow logs and metadata from AWS, Azure, Google Cloud or OCI.
 ---
 
 # kentik-cloudexport_item (Resource)
 
-Resource representing cloud export item
+Manages a Kentik cloud export (Kentik API `cloud_export/v202506`): the configuration Kentik uses to collect flow logs and metadata from AWS, Azure, Google Cloud or OCI.
 
 ## Example Usage
 
 ```terraform
-# create cloudexport for AWS
-resource "kentik-cloudexport_item" "terraform_aws_export" {
-  name           = "test_terraform_aws_export"
+# AWS: VPC flow logs from an S3 bucket, plus metadata from secondary accounts.
+resource "kentik-cloudexport_item" "aws" {
+  name           = "example_aws_export"
   type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
   enabled        = true
-  description    = "terraform aws cloud export"
+  description    = "AWS VPC flow logs"
   plan_id        = "11467"
   cloud_provider = "aws"
+
   aws {
-    bucket            = "terraform-aws-bucket"
-    iam_role_arn      = "arn:aws:iam::003740049406:role/trafficTerraformIngestRole"
-    region            = "us-east-2"
-    delete_after_read = false
-    multiple_buckets  = false
+    bucket                 = "example-vpc-flow-logs"
+    bucket_prefix          = "AWSLogs/"
+    iam_role_arn           = "arn:aws:iam::003740049406:role/KentikIngestRole"
+    region                 = "us-east-2"
+    collect_firewall_logs  = true
+    secondary_aws_accounts = ["111111111111", "222222222222"]
+    secondary_aws_regions  = ["us-east-1", "eu-west-1"]
+    secondary_aws_suffix   = "KentikMetadataRole"
+  }
+
+  sampling {
+    sampling_enabled = true
+    sampling_type    = "CLOUD_EXPORT_SAMPLING_TYPE_RATE"
+    sampling_rate    = 100
   }
 }
 
-output "aws" {
-  value = kentik-cloudexport_item.terraform_aws_export
-}
-
-# create cloudexport for IBM
-resource "kentik-cloudexport_item" "terraform_ibm_export" {
-  name           = "test_terraform_ibm_export"
+# Azure: NSG flow logs from a storage account.
+resource "kentik-cloudexport_item" "azure" {
+  name           = "example_azure_export"
   type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-  enabled        = false
-  description    = "terraform ibm cloud export"
+  enabled        = true
   plan_id        = "11467"
-  cloud_provider = "ibm"
-  ibm {
-    bucket = "terraform-ibm-bucket"
+  cloud_provider = "azure"
+
+  azure {
+    location                   = "centralus"
+    resource_group             = "traffic-generator"
+    storage_account            = "kentikstorage"
+    subscription_id            = "784bd5ec-122b-41b7-9719-22f23d5b49c8"
+    security_principal_enabled = true
   }
 }
 
-output "ibm" {
-  value = kentik-cloudexport_item.terraform_ibm_export
-}
-
-# create cloudexport for GCE
-resource "kentik-cloudexport_item" "terraform_gce_export" {
-  name           = "test_terraform_gce_export"
+# Google Cloud: VPC flow logs from a Pub/Sub subscription.
+resource "kentik-cloudexport_item" "gce" {
+  name           = "example_gce_export"
   type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
-  enabled        = false
-  description    = "terraform gce cloud export"
+  enabled        = true
   plan_id        = "11467"
   cloud_provider = "gce"
+
   gce {
-    project      = "project gce"
-    subscription = "subscription gce"
+    project         = "example-project"
+    subscription    = "kentik-flow-logs"
+    collect_metrics = true
   }
 }
 
-output "gce" {
-  value = kentik-cloudexport_item.terraform_gce_export
+# Oracle Cloud Infrastructure: flow logs from an object storage bucket.
+resource "kentik-cloudexport_item" "oci" {
+  name           = "example_oci_export"
+  type           = "CLOUD_EXPORT_TYPE_KENTIK_MANAGED"
+  enabled        = true
+  plan_id        = "11467"
+  cloud_provider = "oci"
+
+  oci {
+    oci_tenancy_id             = "ocid1.tenancy.oc1..exampleuniqueID"
+    oci_default_region         = "eu-frankfurt-1"
+    oci_user_id                = "ocid1.user.oc1..exampleuniqueID"
+    oci_compartment_id         = ["ocid1.compartment.oc1..exampleuniqueID"]
+    oci_bucket_name            = "flow-logs"
+    oci_bucket_namespace_name  = "examplenamespace"
+    oci_service_connector_ocid = "ocid1.serviceconnector.oc1..exampleuniqueID"
+  }
+}
+
+output "aws_export_id" {
+  value = kentik-cloudexport_item.aws.id
 }
 ```
 
@@ -75,36 +101,53 @@ output "gce" {
 
 ### Required
 
-- `cloud_provider` (String) The cloud provider targeted by this export (aws, azure, gce, ibm)
-- `enabled` (Boolean) Whether this task is enabled and intended to run, or disabled
-- `name` (String) A short name for this export
-- `plan_id` (String) The identifier of the Kentik plan associated with this task
-- `type` (String) CLOUD_EXPORT_TYPE_UNSPECIFIED: Invalid or incomplete exports. CLOUD_EXPORT_TYPE_KENTIK_MANAGED: Cloud exports that are managed by Kentik. CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED: Exports that are managed by Kentik customers (eg. by running an agent)
+- `cloud_provider` (String) Cloud provider: `aws`, `azure`, `gce` or `oci`. The block of the same name holds the provider-specific properties. (`ibm` is no longer supported by the API.)
+- `enabled` (Boolean) Whether the instance is active.
+- `name` (String) User selected name of the instance.
+- `plan_id` (String) Identifier of the billing plan for the instance.
+- `type` (String) Ownership of the cloud export process. One of `CLOUD_EXPORT_TYPE_KENTIK_MANAGED` (the export process is managed by Kentik), `CLOUD_EXPORT_TYPE_CUSTOMER_MANAGED` (managed by the customer, e.g. by running an agent) or `CLOUD_EXPORT_TYPE_UNSPECIFIED`.
 
 ### Optional
 
-- `aws` (Block List) Properties specific to Amazon Web Services "vpc flow logs" exports (see [below for nested schema](#nestedblock--aws))
-- `azure` (Block List) Properties specific to Azure exports (see [below for nested schema](#nestedblock--azure))
-- `bgp` (Block List) Optional BGP related settings (see [below for nested schema](#nestedblock--bgp))
-- `description` (String) An optional, longer description
-- `gce` (Block List) Properties specific to Google Cloud export (see [below for nested schema](#nestedblock--gce))
-- `ibm` (Block List) Properties specific to IBM Cloud exports (see [below for nested schema](#nestedblock--ibm))
+- `aws` (Block List, Max: 1) Properties specific to Amazon Web Services (VPC flow logs) exports. (see [below for nested schema](#nestedblock--aws))
+- `azure` (Block List, Max: 1) Properties specific to Microsoft Azure (NSG flow logs) exports. (see [below for nested schema](#nestedblock--azure))
+- `bgp` (Block List, Max: 1, Deprecated) Deprecated: BGP settings are not part of the cloud_export v202506 API and are ignored. (see [below for nested schema](#nestedblock--bgp))
+- `description` (String) Description of the instance.
+- `gce` (Block List, Max: 1) Properties specific to Google Cloud exports. (see [below for nested schema](#nestedblock--gce))
+- `ibm` (Block List, Max: 1, Deprecated) Deprecated: IBM Cloud is not supported by the cloud_export v202506 API. (see [below for nested schema](#nestedblock--ibm))
+- `oci` (Block List, Max: 1) Properties specific to Oracle Cloud Infrastructure exports. (see [below for nested schema](#nestedblock--oci))
+- `sampling` (Block List, Max: 1) Sampling settings for the export. (see [below for nested schema](#nestedblock--sampling))
 
 ### Read-Only
 
-- `current_status` (List of Object) Export task status (see [below for nested schema](#nestedatt--current_status))
-- `id` (String) The internal cloud export identifier. This is Read-only and assigned by Kentik
+- `cdate` (String) Creation timestamp (UTC, RFC 3339).
+- `current_status` (List of Object) Runtime status of the export process. (see [below for nested schema](#nestedatt--current_status))
+- `edate` (String) Last modification timestamp (UTC, RFC 3339).
+- `id` (String) Unique identifier of the instance. Assigned by Kentik.
 
 <a id="nestedblock--aws"></a>
 ### Nested Schema for `aws`
 
 Required:
 
-- `bucket` (String) Source S3 bucket to fetch vpc flow logs from
-- `delete_after_read` (Boolean) If true, attempt to delete vpc flow log chunks from S3 after they've been read
-- `iam_role_arn` (String) ARN for the IAM role to assume when fetching data or making AWS calls for this export
-- `multiple_buckets` (Boolean)
-- `region` (String) AWS region where this bucket resides
+- `iam_role_arn` (String) ARN of the IAM role granted access to the S3 bucket and describe API end-points.
+- `region` (String) Name of AWS region from which to export flow logs.
+
+Optional:
+
+- `aws_iam_role_arn_is_org` (Boolean) Whether the IAM role is an organization role.
+- `bucket` (String) Name of S3 bucket from which flow and/or firewall logs are to be exported.
+- `bucket_prefix` (String) Prefix of S3 bucket from which flow and/or firewall logs are to be exported.
+- `collect_firewall_logs` (Boolean) Import metadata and collect firewall logs in addition to flow logs. The API defaults to `false`. To collect firewall logs without flow logs, set `collect_flow_logs = false`.
+- `collect_flow_logs` (Boolean) Import metadata and collect flow logs. The API defaults to `true`.
+- `collect_metrics` (Boolean) Import metadata and collect metrics data. Flow logs are still collected unless `metadata_only` is also `true`. The API defaults to `false`.
+- `delete_after_read` (Boolean, Deprecated) Delete logs from the S3 bucket after export. Deprecated by the API.
+- `metadata_only` (Boolean) Import only metadata without any flows. The API defaults to `false`.
+- `multiple_buckets` (Boolean, Deprecated) Ignored: not part of the cloud_export v202506 API. Kept so existing configurations keep working.
+- `secondary_aws_accounts` (List of String) Account IDs granted access to the describe API end-points.
+- `secondary_aws_blocked_accounts` (List of String) Account IDs to filter out of the organization when calling the describe API end-points.
+- `secondary_aws_regions` (List of String) Regions of secondary accounts from which to collect metadata.
+- `secondary_aws_suffix` (String) Role suffix used to build secondary account role ARNs from the template `arn:aws:iam::<aws_account_id>:role/<role_suffix>`.
 
 
 <a id="nestedblock--azure"></a>
@@ -112,21 +155,24 @@ Required:
 
 Required:
 
-- `location` (String)
-- `resource_group` (String)
-- `security_principal_enabled` (Boolean)
-- `storage_account` (String)
-- `subscription_id` (String)
+- `location` (String) Azure region/location from which to export flow logs.
+- `resource_group` (String) Resource group containing the NSG generating flow logs.
+- `storage_account` (String) Storage account from which flow logs are to be extracted.
+- `subscription_id` (String) ID of Azure account from which flows logs are to be exported.
+
+Optional:
+
+- `security_principal_enabled` (Boolean) Whether the security principal for the Kentik flow export application has been authorized.
 
 
 <a id="nestedblock--bgp"></a>
 ### Nested Schema for `bgp`
 
-Required:
+Optional:
 
-- `apply_bgp` (Boolean) If true, apply BGP data discovered via another device to the flow from this export
-- `device_bgp_type` (String) device, other_device, none
-- `use_bgp_device_id` (String) Which other device to get BGP data from
+- `apply_bgp` (Boolean)
+- `device_bgp_type` (String)
+- `use_bgp_device_id` (String)
 
 
 <a id="nestedblock--gce"></a>
@@ -134,8 +180,14 @@ Required:
 
 Required:
 
-- `project` (String)
-- `subscription` (String)
+- `project` (String) Name of the project from which to export flow logs.
+
+Optional:
+
+- `collect_flow_logs` (Boolean) Import metadata and collect flow logs.
+- `collect_metrics` (Boolean) Import metadata and collect metrics data. Flow logs are still collected unless `metadata_only` is also `true`.
+- `metadata_only` (Boolean) Import only metadata without any flows.
+- `subscription` (String) GCP Pub/Sub subscription providing flow logs.
 
 
 <a id="nestedblock--ibm"></a>
@@ -144,6 +196,36 @@ Required:
 Required:
 
 - `bucket` (String)
+
+
+<a id="nestedblock--oci"></a>
+### Nested Schema for `oci`
+
+Required:
+
+- `oci_default_region` (String) Default enabled region from which to collect metadata.
+- `oci_tenancy_id` (String) OCI tenancy OCID.
+
+Optional:
+
+- `metadata_only` (Boolean) Import only metadata without any flows.
+- `oci_bucket_name` (String) Name of the bucket from which flow logs are extracted. Required when collecting flow logs.
+- `oci_bucket_namespace_name` (String) Namespace of the bucket from which flow logs are extracted. Required when collecting flow logs.
+- `oci_collect_flow_logs` (Boolean) Import metadata and collect flow logs.
+- `oci_compartment_id` (List of String) Compartment IDs from which to collect metadata.
+- `oci_flow_object_name_prefix` (String) Object name prefix: Kentik looks for files in the bucket whose names start with `<prefix>/<service_connector_ocid>`.
+- `oci_service_connector_ocid` (String) OCID of the OCI service connector that delivers flow logs to the bucket.
+- `oci_user_id` (String) ID of the user created to represent the Kentik cloud export tool.
+
+
+<a id="nestedblock--sampling"></a>
+### Nested Schema for `sampling`
+
+Optional:
+
+- `sampling_enabled` (Boolean) Whether sampling is used for this export.
+- `sampling_rate` (Number) Sampling rate for the export.
+- `sampling_type` (String) `CLOUD_EXPORT_SAMPLING_TYPE_UNSAMPLED` exports all flows; `CLOUD_EXPORT_SAMPLING_TYPE_RATE` exports sampled flows and requires `sampling_rate` greater than 0 and less than 2000.
 
 
 <a id="nestedatt--current_status"></a>
@@ -156,3 +238,14 @@ Read-Only:
 - `flow_found` (Boolean)
 - `status` (String)
 - `storage_account_access` (Boolean)
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Cloud exports are imported by their Kentik ID.
+terraform import kentik-cloudexport_item.aws 1234
+```

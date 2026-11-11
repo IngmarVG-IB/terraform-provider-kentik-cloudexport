@@ -1,16 +1,16 @@
 terraform {
   required_providers {
     kentik-cloudexport = {
-      version = ">= 0.2.0"
+      version = ">= 0.5.0"
       source  = "kentik/kentik-cloudexport"
     }
   }
 }
 
 provider "kentik-cloudexport" {
-  # email, token and apiurl are read from KTAPI_AUTH_EMAIL, KTAPI_AUTH_TOKEN, KTAPI_URL env variables if not specified here
+  # email, token and region are read from KTAPI_AUTH_EMAIL, KTAPI_AUTH_TOKEN, KTAPI_REGION env variables if not specified here
 
   # email="john@acme.com"
   # token="token123"
-  # apiurl = "http://localhost:8080"
+  # region = "EU"
 }

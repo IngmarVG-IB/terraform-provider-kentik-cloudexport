@@ -8,48 +8,49 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/kentik/community_sdk_golang/kentikapi"
+	cloudexport "github.com/kentik/api-schema-public/gen/go/kentik/cloud_export/v202506"
 )
 
 func dataSourceCloudExportList() *schema.Resource {
 	return &schema.Resource{
-		Description: "Data source representing list of cloud exports",
+		Description: "Lists all Kentik cloud exports in the account (Kentik API `cloud_export/v202506`).",
 		ReadContext: dataSourceCloudExportListRead,
 		Schema: map[string]*schema.Schema{
 			"items": {
-				Type:     schema.TypeList,
-				Computed: true,
-				Elem: &schema.Resource{
-					Schema: makeCloudExportSchema(readList),
-				},
+				Type:        schema.TypeList,
+				Computed:    true,
+				Description: "All cloud exports with valid data.",
+				Elem:        &schema.Resource{Schema: makeCloudExportSchema(readList)},
+			},
+			"invalid_exports_count": {
+				Type:        schema.TypeInt,
+				Computed:    true,
+				Description: "Number of cloud exports with invalid data, which the API does not return.",
 			},
 		},
 	}
 }
 
-func dataSourceCloudExportListRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	tflog.Debug(ctx, "List cloud export Kentik API request")
-	listResp, err := m.(*kentikapi.Client).CloudExports.GetAll(ctx)
-	tflog.Debug(ctx, "List cloud export Kentik API response", map[string]interface{}{"response": listResp})
+func dataSourceCloudExportListRead(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	resp, err := clientFrom(m).CloudExport.ListCloudExports(ctx, &cloudexport.ListCloudExportsRequest{})
 	if err != nil {
 		return detailedDiagError("Failed to read cloud export list", err)
 	}
-
-	if listResp != nil {
-		numExports := len(listResp.CloudExports)
-		exports := make([]interface{}, numExports)
-		for i, e := range listResp.CloudExports {
-			ee := e // avoid implicit memory aliasing in for loop (G601)
-			exports[i] = cloudExportToMap(&ee)
-		}
-
-		if err = d.Set("items", exports); err != nil {
-			return diag.FromErr(err)
-		}
+	items := make([]any, 0, len(resp.GetExports()))
+	for _, e := range resp.GetExports() {
+		items = append(items, cloudExportToMap(e, nil))
+	}
+	if err = d.Set("items", items); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("invalid_exports_count", int(resp.GetInvalidExportsCount())); err != nil {
+		return diag.FromErr(err)
+	}
+	if n := resp.GetInvalidExportsCount(); n > 0 {
+		tflog.Warn(ctx, "Kentik API skipped cloud exports with invalid data", map[string]any{"count": n})
 	}
 
-	// use UNIX time as ID to force list update every time Terraform asks for the list
+	// Use the current time as ID so Terraform always treats the list as fresh.
 	d.SetId(strconv.FormatInt(time.Now().Unix(), 10))
-
 	return nil
 }

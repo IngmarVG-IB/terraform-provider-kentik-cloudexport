@@ -22,6 +22,9 @@ provider_installation {
 RC
 export TF_CLI_CONFIG_FILE="$WORK/terraformrc"
 export TF_IN_AUTOMATION=1
+# Dummy credentials satisfy the required provider arguments; validate never
+# configures the provider, so nothing is sent anywhere.
+export KTAPI_AUTH_EMAIL=validate@example.com KTAPI_AUTH_TOKEN=dummy
 
 status=0
 while IFS= read -r dir; do
