@@ -1,32 +1,46 @@
 name: Acceptance Tests
 
-on: release
+# Runs against a live Kentik tenant, so only on manual dispatch from the
+# protected environment that holds the credentials.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   acceptance:
-    name: Run acceptance tests
+    name: Acceptance tests (${{ matrix.cli }})
     runs-on: ubuntu-latest
     environment: api-integ-test-eu
-    timeout-minutes: 5
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        terraform:
-          - 0.15.0
-          - 1.0.0
+        cli: [terraform, opentofu]
     steps:
-      - name: Set up Go
-        id: go
-        uses: actions/setup-go@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: 1.17
-      - name: Check out code
-        uses: actions/checkout@v3
-      - name: Run tests
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - if: matrix.cli == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - if: matrix.cli == 'opentofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_wrapper: false
+      - name: Point the test harness at tofu
+        if: matrix.cli == 'opentofu'
+        run: echo "TF_ACC_TERRAFORM_PATH=$(command -v tofu)" >> "$GITHUB_ENV"
+      - name: Run acceptance tests
         env:
-          TF_ACC_TERRAFORM_VERSION: ${{ matrix.terraform }}
           KTAPI_AUTH_EMAIL: ${{ secrets.KTAPI_AUTH_EMAIL }}
           KTAPI_AUTH_TOKEN: ${{ secrets.KTAPI_AUTH_TOKEN }}
           KTAPI_URL: ${{ secrets.KTAPI_URL }}
           KENTIK_PLAN_ID: ${{ secrets.KENTIK_PLAN_ID }}
-        run: make acceptance
+        run: make testacc

@@ -1,4 +1,4 @@
-//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
+//go:generate go tool tfplugindocs generate --provider-name kentik-cloudexport
 
 package main
 

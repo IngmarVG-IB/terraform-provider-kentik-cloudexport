@@ -1,0 +1,20 @@
+{
+  "schema_source": {
+    "repo": "github.com/kentik/api-schema-public",
+    "ref": "v0.0.0-20220322181339-896729e59945"
+  },
+  "services": [
+    {
+      "service": "cloud_export",
+      "version": "v202101beta1",
+      "stability": "beta",
+      "status": "deprecated",
+      "surface": [
+        "resource kentik-cloudexport_item",
+        "data-source kentik-cloudexport_item",
+        "data-source kentik-cloudexport_list"
+      ]
+    }
+  ],
+  "legacy": []
+}

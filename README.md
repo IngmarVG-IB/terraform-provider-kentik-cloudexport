@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- [Go](https://golang.org/doc/install) >= 1.17
-- [Terraform](https://www.terraform.io/downloads.html) >= 0.15
+- [Go](https://go.dev/doc/install) >= 1.26 (to build)
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0 or [OpenTofu](https://opentofu.org/) >= 1.6
 
 ## Usage
 
@@ -13,19 +13,15 @@ Detailed user documentation for the provider can be found [here](https://registr
 
 Anybody who wants to contribute to development is welcome to provide pull requests. To work on the provider, install tools listed in [requirements section](#requirements).
 
-Optional tools:
-- _golangci-lint_: <https://golangci-lint.run/usage/install/#local-installation>
+See [AGENTS.md](AGENTS.md) for the full maintainer guide (layout, commands, compatibility rules, release process).
 
 Development steps:
 - Build the provider: `make build`
-- Build and install the provider locally: `make install`
-- Run tests: `make test`
-- Run acceptance tests: `make acceptance`
-- Run golangci-lint: `make lint`
-- Format the code: `make fmt`
-- Generate the documentation: `make docs`
-- Check if generated documentation is up-to-date: `make check-docs`
-- Check Go module consistency: `make check-go-mod`
+- Run offline unit tests: `make test`
+- Run acceptance tests against a live tenant (opt-in): `make testacc`
+- Lint, format, vulnerability scan: `make lint`, `make fmt`, `make vuln`
+- Regenerate the documentation: `make generate`
+- Validate the examples with a dev_overrides config: `make validate-examples`
 
 ### Test
 
@@ -64,5 +60,5 @@ Release process for the provider is based on Git repository tags that follow [se
 
 To release the provider:
 1. Make sure that all code that you want to release is in _master_ branch.
-2. Navigate to [repository releases page](https://github.com/kentik/terraform-provider-kentik-cloudexport/releases), click _Draft a new release_ button and put tag version (in _v\[0-9].\[0-9].\[0-9]_ format), name and description.
-3. Go to [GitHub Actions](https://github.com/kentik/terraform-provider-kentik-cloudexport/actions) to observe the release job.
+2. Push a tag in _v\[0-9].\[0-9].\[0-9]_ format. The release workflow builds, signs and attests the artifacts and creates a **draft** GitHub release.
+3. Review the draft release and publish it; the Terraform Registry picks it up on publish.

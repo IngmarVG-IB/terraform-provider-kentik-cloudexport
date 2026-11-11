@@ -8,3 +8,4 @@ terraform.tfplan
 terraform.tfstate
 test-api-server
 .idea/
+dist/
