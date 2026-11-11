@@ -59,7 +59,11 @@ jobs:
           tofu_wrapper: false
       - name: Point the test harness at tofu
         if: matrix.cli == 'opentofu'
-        run: echo "TF_ACC_TERRAFORM_PATH=$(command -v tofu)" >> "$GITHUB_ENV"
+        run: |
+          echo "TF_ACC_TERRAFORM_PATH=$(command -v tofu)" >> "$GITHUB_ENV"
+          # OpenTofu resolves the in-process test provider against its own registry host;
+          # the terraform-plugin-testing default (registry.terraform.io/-/...) is rejected.
+          echo "TF_ACC_PROVIDER_HOST=registry.opentofu.org" >> "$GITHUB_ENV"
       - run: make test
 
   lint:
